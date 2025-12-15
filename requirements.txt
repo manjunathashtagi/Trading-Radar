@@ -1,0 +1,10 @@
+pandas>=2.0
+numpy>=1.25
+requests>=2.30
+yfinance>=0.2.66
+python-dotenv>=1.2.0
+tqdm>=4.65
+apscheduler>=3.10.1
+ta>=0.11.0
+flask
+gunicorn
