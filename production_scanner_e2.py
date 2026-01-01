@@ -213,6 +213,14 @@ def get_percent_change_for_tickers(tickers: List[str], period: str = "2d", inter
             df = yf.download(t, period=period, interval=interval, auto_adjust=False, progress=False, threads=False, timeout=timeout)
             if df is None or df.empty:
                 continue
+            
+            analysis = analyze_ticker(t, df, args)
+            if not analysis:
+                continue
+            
+            found_picks.append(analysis)
+
+                continue
             df = flatten_columns(df)
             if "Close" not in df.columns:
                 continue
