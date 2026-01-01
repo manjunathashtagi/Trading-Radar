@@ -546,6 +546,12 @@ def run_scanner(tickers: List[str], args):
 
             logger.info("Run finished: checked=%d found=%d", checked, len(found_picks))
 
+            logger.info(
+                "Stats: checked=%d found=%d",
+                checked, len(found_picks)
+            )
+
+
             # Aggregate picks into message lines
             if found_picks:
                 # Sort by score desc then ticker
