@@ -40,14 +40,25 @@ def send_telegram(message: str):
 def get_nifty_change_pct():
     try:
         df = yf.download(NIFTY_SYMBOL, period="2d", interval="1d", progress=False)
-        if len(df) < 2:
+
+        if df.empty or len(df) < 2:
             return 0.0
-        prev_close = df["Close"].iloc[-2]
-        last_close = df["Close"].iloc[-1]
+
+        close = df["Close"]
+
+        # Handle Series / DataFrame edge case
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+
+        prev_close = float(close.iloc[-2])
+        last_close = float(close.iloc[-1])
+
         return ((last_close - prev_close) / prev_close) * 100
+
     except Exception as e:
         print("NIFTY fetch failed:", e)
         return 0.0
+
 
 
 def main():
