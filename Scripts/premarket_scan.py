@@ -1,149 +1,141 @@
 import pandas as pd
-import numpy as np
 import yfinance as yf
-import datetime as dt
-import os
 import requests
+import os
+from datetime import datetime
 
-# ================= CONFIG =================
-LOOKBACK_DAYS = 60
-TOP_N = 120
-DATE = dt.date.today().strftime("%Y%m%d")
-OUTPUT_CSV = f"radar_watchlist_{DATE}.csv"
+# ---------------- CONFIG ----------------
+UNIVERSE_FILE = "data/universe_nse.csv"
+OUTPUT_FILE = "data/universe_pre_market.csv"
+
+NIFTY_SYMBOL = "^NSEI"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ================= TELEGRAM =================
-def send_telegram(msg):
+MIN_CONFIDENCE = 60
+MAX_STOCKS_IN_ALERT = 20
+
+# ---------------------------------------
+
+
+def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram credentials missing")
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
 
-# ================= NIFTY =================
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print("Telegram error:", e)
+
+
 def get_nifty_change_pct():
-    nifty = yf.download("^NSEI", period="2d", interval="1d", progress=False)
-    if len(nifty) < 2:
+    try:
+        df = yf.download(NIFTY_SYMBOL, period="2d", interval="1d", progress=False)
+        if len(df) < 2:
+            return 0.0
+        prev_close = df["Close"].iloc[-2]
+        last_close = df["Close"].iloc[-1]
+        return ((last_close - prev_close) / prev_close) * 100
+    except Exception as e:
+        print("NIFTY fetch failed:", e)
         return 0.0
-    prev = nifty.iloc[-2]["Close"]
-    last = nifty.iloc[-1]["Close"]
-    return ((last - prev) / prev) * 100
 
-# ================= SCORES =================
-def compute_scores(df):
-    df["EMA20"] = df["Close"].ewm(span=20).mean()
-    df["EMA50"] = df["Close"].ewm(span=50).mean()
 
-    df["trend_score"] = (
-        (df["Close"] > df["EMA20"]).astype(int) * 40 +
-        (df["Close"] > df["EMA50"]).astype(int) * 60
-    )
-
-    df["momentum_score"] = (
-        df["Close"].pct_change(5).clip(-0.1, 0.1) * 500
-    ).fillna(0)
-
-    df["volatility_score"] = (
-        (df["High"] - df["Low"]).rolling(14).mean() /
-        df["Close"]
-    ).fillna(0) * 100
-
-    return df
-
-# ================= SECTOR =================
-def compute_sector_strength(df):
-    sector_map = {}
-    for sector, group in df.groupby("sector"):
-        sector_map[sector] = group["relative_strength_pct"].mean()
-    return sector_map
-
-# ================= BUCKET =================
-def assign_bucket(row):
-    if row["volatility_score"] > 3.5 and row["momentum_score"] > 3:
-        return "7%"
-    if row["volatility_score"] > 2 and row["momentum_score"] > 1.5:
-        return "5%"
-    return "2%"
-
-# ================= MAIN =================
 def main():
-    universe = pd.read_csv("data/universe_nse.csv")
+    start_time = datetime.now()
+    print("🚀 Premarket scan started at", start_time)
+
+    # ---------------- LOAD UNIVERSE ----------------
+    universe = pd.read_csv(UNIVERSE_FILE)
+    symbols = universe["symbol"].dropna().unique().tolist()
+
+    print(f"📊 Total symbols to scan: {len(symbols)}")
+
     nifty_change = get_nifty_change_pct()
-    records = []
+    print(f"📉 NIFTY prev day change: {nifty_change:.2f}%")
 
-    for _, u in universe.iterrows():
-        symbol = u["symbol"]
-        sector = u["sector"]
+    rows = []
 
+    # ---------------- STOCK LOOP ----------------
+    for i, symbol in enumerate(symbols, start=1):
         try:
-            data = yf.download(symbol + ".NS", period=f"{LOOKBACK_DAYS}d", progress=False)
-            if len(data) < 30:
+            ticker = yf.Ticker(symbol + ".NS")
+            hist = ticker.history(period="2d", interval="1d")
+
+            if len(hist) < 2:
                 continue
 
-            data = compute_scores(data)
-            last = data.iloc[-1]
-            prev = data.iloc[-2]
+            prev_close = hist["Close"].iloc[-2]
+            last_close = hist["Close"].iloc[-1]
+            volume = hist["Volume"].iloc[-1]
 
-            prev_day_change = (
-                (prev["Close"] - data.iloc[-3]["Close"]) /
-                data.iloc[-3]["Close"]
-            ) * 100
+            prev_day_change_pct = ((last_close - prev_close) / prev_close) * 100
+            relative_strength = prev_day_change_pct - nifty_change
 
-            records.append({
+            confidence = 50
+            if relative_strength > 0:
+                confidence += 20
+            if volume > hist["Volume"].mean():
+                confidence += 15
+            if prev_day_change_pct > 2:
+                confidence += 15
+
+            rows.append({
                 "symbol": symbol,
-                "sector": sector,
-                "prev_close": prev["Close"],
-                "prev_day_change_pct": prev_day_change,
-                "prev_day_volume_ratio": prev["Volume"] /
-                    data["Volume"].rolling(20).mean().iloc[-2],
-                "trend_score": last["trend_score"],
-                "momentum_score": last["momentum_score"],
-                "volatility_score": last["volatility_score"]
+                "prev_day_change_pct": round(prev_day_change_pct, 2),
+                "relative_strength": round(relative_strength, 2),
+                "confidence": confidence
             })
-        except Exception:
-            continue
 
-    df = pd.DataFrame(records)
+            if i % 50 == 0:
+                print(f"✅ Processed {i} stocks")
 
-    # -------- Relative Strength --------
-    df["relative_strength_pct"] = (
-        df["prev_day_change_pct"] - nifty_change
-    )
+        except Exception as e:
+            print(f"❌ Error processing {symbol}: {e}")
 
-    df = df[df["relative_strength_pct"] >= 0.5]
+    df = pd.DataFrame(rows)
 
-    # -------- Sector Strength --------
-    sector_map = compute_sector_strength(df)
-    df["sector_strength"] = df["sector"].map(sector_map)
+    if df.empty:
+        print("⚠️ No data collected")
+        return
 
-    df = df[df["sector_strength"] >= 0]
+    # ---------------- FILTER & SAVE ----------------
+    df = df[df["confidence"] >= MIN_CONFIDENCE]
+    df = df.sort_values("confidence", ascending=False)
+    df = df.head(MAX_STOCKS_IN_ALERT)
 
-    # -------- Composite Score --------
-    df["composite_score"] = (
-        df["trend_score"] * 0.4 +
-        df["momentum_score"] * 0.35 +
-        df["volatility_score"] * 0.25
-    )
+    os.makedirs("data", exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
 
-    df = df.sort_values("composite_score", ascending=False).head(TOP_N)
+    # ---------------- TELEGRAM ----------------
+    if df.empty:
+        print("ℹ️ No qualifying stocks today")
+        return
 
-    df["target_bucket"] = df.apply(assign_bucket, axis=1)
-    df["selection_reason"] = "RS + Sector + Trend + Momentum + Volatility"
+    message = "*📊 Premarket Radar (High Confidence)*\n\n"
+    for _, r in df.iterrows():
+        message += (
+            f"• `{r['symbol']}` | "
+            f"Δ {r['prev_day_change_pct']}% | "
+            f"RS {r['relative_strength']} | "
+            f"Conf {r['confidence']}\n"
+        )
 
-    df.to_csv(OUTPUT_CSV, index=False)
+    send_telegram(message)
 
-    # -------- Telegram --------
-    msg = (
-        f"📊 Pre-Market Radar Ready (09:10)\n\n"
-        f"NIFTY Change: {round(nifty_change,2)}%\n"
-        f"Stocks Shortlisted: {len(df)}\n\n"
-        f"2%: {(df['target_bucket']=='2%').sum()}\n"
-        f"5%: {(df['target_bucket']=='5%').sum()}\n"
-        f"7%: {(df['target_bucket']=='7%').sum()}\n\n"
-        f"Intraday LONG-only radar active"
-    )
-    send_telegram(msg)
+    end_time = datetime.now()
+    print("✅ Premarket scan completed at", end_time)
+    print("⏱️ Duration:", end_time - start_time)
+
 
 if __name__ == "__main__":
     main()
