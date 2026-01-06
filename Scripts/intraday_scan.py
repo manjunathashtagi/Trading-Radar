@@ -1,170 +1,157 @@
 import pandas as pd
 import yfinance as yf
-import datetime as dt
-import json
-import os
 import requests
+import os
+from datetime import datetime, time
 
-# ================= CONFIG =================
-DATE = dt.date.today().strftime("%Y%m%d")
-WATCHLIST = f"radar_watchlist_{DATE}.csv"
-STATE_FILE = f"alerted_today_{DATE}.json"
+# ---------------- CONFIG ----------------
+UNIVERSE_FILE = "data/universe_nse.csv"
 
-MAX_TRADES_PER_DAY = 3
+NIFTY_SYMBOL = "^NSEI"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ================= TELEGRAM =================
-def send_telegram(msg):
+MIN_CONFIDENCE = 70          # relaxed from 80 (important)
+MAX_ALERTS_PER_RUN = 3       # avoid spam
+VOLUME_MULTIPLIER = 1.3      # reasonable, not too tight
+
+MARKET_OPEN = time(9, 15)
+MARKET_CLOSE = time(15, 15)
+
+# ---------------------------------------
+
+
+def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-
-# ================= STATE =================
-def load_alerted():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            return set(json.load(f))
-    return set()
-
-def save_alerted(alerted):
-    with open(STATE_FILE, "w") as f:
-        json.dump(sorted(list(alerted)), f)
-
-# ================= ORB =================
-def get_orb_high(df):
-    orb = df.between_time("09:15", "09:45")
-    if orb.empty:
-        return None
-    return orb["High"].max()
-
-# ================= CONFIDENCE =================
-def confidence_grade(score):
-    if score >= 8:
-        return "A (High)"
-    if score >= 6:
-        return "B (Medium)"
-    return "C (Low)"
-
-# ================= EVALUATE =================
-def evaluate_stock(row):
-    symbol = row["symbol"]
-    bucket_pct = row["target_bucket"]
-
-    df = yf.download(symbol + ".NS", period="1d", interval="15m", progress=False)
-    if len(df) < 30:
-        return None
-
-    df["EMA9"] = df["Close"].ewm(span=9).mean()
-    df["EMA21"] = df["Close"].ewm(span=21).mean()
-    df["VWAP"] = (
-        (df["Volume"] * (df["High"] + df["Low"] + df["Close"]) / 3).cumsum()
-        / df["Volume"].cumsum()
-    )
-    df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    score = 0
-
-    # ORB
-    orb_high = get_orb_high(df)
-    if orb_high and last["Close"] > orb_high:
-        score += 2
-    else:
-        return None
-
-    # VWAP + EMA
-    if last["Close"] > last["VWAP"] and last["EMA9"] > last["EMA21"]:
-        score += 2
-    else:
-        return None
-
-    # Volume
-    avg_vol = df["Volume"].rolling(5).mean().iloc[-1]
-    if last["Volume"] >= avg_vol * 1.5:
-        score += 2
-
-    # Relative Strength
-    if row["relative_strength_pct"] >= 1.0:
-        score += 2
-
-    # Sector Strength
-    if row["sector_strength"] >= 1.0:
-        score += 2
-
-    entry_low = max(prev["High"], last["EMA9"], last["VWAP"])
-    entry_high = last["High"]
-
-    stop_loss = min(
-        prev["Low"],
-        last["EMA21"],
-        last["VWAP"] - 0.5 * last["ATR"]
-    )
-
-    pct = float(bucket_pct.replace("%", ""))
-    target = entry_high * (1 + pct / 100)
-
-    risk = entry_high - stop_loss
-    reward = target - entry_high
-
-    if risk <= 0 or reward / risk < 1.5:
-        return None
-
-    return {
-        "entry": f"{round(entry_low,2)}–{round(entry_high,2)}",
-        "sl": round(stop_loss, 2),
-        "target": round(target, 2),
-        "confidence": confidence_grade(score),
-        "score": score
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
     }
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print("Telegram error:", e)
 
-# ================= MAIN =================
+
+def market_is_open():
+    now = datetime.now().time()
+    return MARKET_OPEN <= now <= MARKET_CLOSE
+
+
+def get_nifty_bias():
+    try:
+        df = yf.download(NIFTY_SYMBOL, period="1d", interval="5m", progress=False)
+        if df.empty:
+            return 0
+        return 1 if df["Close"].iloc[-1] > df["Open"].iloc[0] else -1
+    except:
+        return 0
+
+
 def main():
-    if not os.path.exists(WATCHLIST):
+    if not market_is_open():
+        print("Market closed. Exiting intraday scan.")
         return
 
-    watch = pd.read_csv(WATCHLIST)
-    alerted = load_alerted()
+    start_time = datetime.now()
+    print("🚀 Intraday scan started at", start_time)
 
-    if len(alerted) >= MAX_TRADES_PER_DAY:
+    universe = pd.read_csv(UNIVERSE_FILE)
+    symbols = universe["symbol"].dropna().unique().tolist()
+
+    print(f"📊 Scanning full universe: {len(symbols)} stocks")
+
+    nifty_bias = get_nifty_bias()
+
+    alerts = []
+    scanned = 0
+    passed_orb = 0
+
+    for symbol in symbols:
+        try:
+            scanned += 1
+            ticker = yf.Ticker(symbol + ".NS")
+
+            df = ticker.history(period="1d", interval="5m")
+
+            if df.empty or len(df) < 6:
+                continue
+
+            open_price = df["Open"].iloc[0]
+            orb_high = df["High"].iloc[:3].max()
+            orb_low = df["Low"].iloc[:3].min()
+
+            last_close = df["Close"].iloc[-1]
+            last_volume = df["Volume"].iloc[-1]
+            avg_volume = df["Volume"].mean()
+
+            breakout_up = last_close > orb_high
+            breakout_down = last_close < orb_low
+
+            if not breakout_up:
+                continue
+
+            passed_orb += 1
+
+            if last_volume < avg_volume * VOLUME_MULTIPLIER:
+                continue
+
+            confidence = 50
+
+            confidence += 15  # ORB breakout
+            confidence += 15  # volume confirmation
+
+            if nifty_bias > 0:
+                confidence += 10
+
+            if confidence < MIN_CONFIDENCE:
+                continue
+
+            entry = round(last_close, 2)
+            stop_loss = round(orb_low, 2)
+            target = round(entry * 1.02, 2)  # 2% default intraday
+
+            alerts.append({
+                "symbol": symbol,
+                "entry": entry,
+                "sl": stop_loss,
+                "target": target,
+                "confidence": confidence
+            })
+
+            if len(alerts) >= MAX_ALERTS_PER_RUN:
+                break
+
+        except Exception:
+            continue
+
+    if not alerts:
+        print(
+            f"No signals | Scanned: {scanned} | ORB passed: {passed_orb}"
+        )
         return
 
-    for _, row in watch.iterrows():
-        if len(alerted) >= MAX_TRADES_PER_DAY:
-            break
+    message = "*🚨 Intraday Trade Alerts (Full Market Scan)*\n\n"
 
-        symbol = row["symbol"]
-        if symbol in alerted:
-            continue
-
-        result = evaluate_stock(row)
-        if not result:
-            continue
-
-        msg = (
-            f"📈 BUY SETUP ({row['target_bucket']})\n\n"
-            f"Stock: {symbol}\n"
-            f"Sector: {row['sector']}\n"
-            f"Confidence: {result['confidence']}\n\n"
-            f"Buy Zone: {result['entry']}\n"
-            f"Stop Loss: {result['sl']}\n"
-            f"Target: {result['target']}\n\n"
-            f"Context:\n"
-            f"• Relative strength vs NIFTY\n"
-            f"• Strong sector\n"
-            f"• VWAP + EMA alignment\n"
-            f"• ORB breakout\n\n"
-            f"Trade {len(alerted)+1}/{MAX_TRADES_PER_DAY}"
+    for a in alerts:
+        message += (
+            f"*{a['symbol']}*\n"
+            f"Entry: {a['entry']}\n"
+            f"SL: {a['sl']}\n"
+            f"Target: {a['target']}\n"
+            f"Confidence: {a['confidence']}\n\n"
         )
 
-        send_telegram(msg)
-        alerted.add(symbol)
+    send_telegram(message)
 
-    save_alerted(alerted)
+    print("✅ Intraday alerts sent")
+    print("⏱️ Duration:", datetime.now() - start_time)
+
 
 if __name__ == "__main__":
     main()
