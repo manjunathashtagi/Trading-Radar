@@ -6,15 +6,14 @@ from datetime import datetime, time, timezone, timedelta
 
 # ---------------- CONFIG ----------------
 UNIVERSE_FILE = "data/universe_nse.csv"
-
-NIFTY_SYMBOL = "^NSEI"
+TRADES_FILE = "data/trades_today.csv"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-MIN_CONFIDENCE = 70          # balanced (not too tight)
-MAX_ALERTS_PER_RUN = 3       # avoid spam
-VOLUME_MULTIPLIER = 1.3      # reasonable volume confirmation
+MIN_CONFIDENCE = 70
+MAX_ALERTS_PER_RUN = 3
+VOLUME_MULTIPLIER = 1.3
 
 MARKET_OPEN = time(9, 15)
 MARKET_CLOSE = time(15, 15)
@@ -26,113 +25,86 @@ IST = timezone(timedelta(hours=5, minutes=30))
 def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
+    requests.post(url, data={
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        print("Telegram error:", e)
+    }, timeout=10)
 
 
 def market_is_open():
-    now_ist = datetime.now(IST).time()
-    return MARKET_OPEN <= now_ist <= MARKET_CLOSE
+    return MARKET_OPEN <= datetime.now(IST).time() <= MARKET_CLOSE
 
 
-def get_nifty_bias():
-    try:
-        df = yf.download(
-            NIFTY_SYMBOL,
-            period="1d",
-            interval="5m",
-            progress=False
-        )
-
-        if df.empty:
-            return 0
-
-        open_price = float(df["Open"].iloc[0])
-        last_close = float(df["Close"].iloc[-1])
-
-        return 1 if last_close > open_price else -1
-
-    except Exception as e:
-        print("NIFTY bias error:", e)
-        return 0
+def detect_speed(candle_range_pct, volume_ratio):
+    if candle_range_pct > 1.2 and volume_ratio > 1.8:
+        return "⚡ Fast"
+    elif candle_range_pct > 0.7:
+        return "⏳ Normal"
+    else:
+        return "🐢 Slow"
 
 
 def main():
     if not market_is_open():
-        print("Market closed. Exiting intraday scan.")
+        print("Market closed.")
         return
-
-    start_time = datetime.now(IST)
-    print("🚀 Intraday scan started at", start_time)
 
     universe = pd.read_csv(UNIVERSE_FILE)
     symbols = universe["symbol"].dropna().unique().tolist()
 
-    print(f"📊 Scanning full universe: {len(symbols)} stocks")
+    os.makedirs("data", exist_ok=True)
 
-    nifty_bias = get_nifty_bias()
+    if not os.path.exists(TRADES_FILE):
+        pd.DataFrame(columns=[
+            "symbol", "entry", "sl", "target",
+            "confidence", "speed", "alert_time", "status"
+        ]).to_csv(TRADES_FILE, index=False)
+
+    trades_df = pd.read_csv(TRADES_FILE)
 
     alerts = []
-    scanned = 0
-    passed_orb = 0
 
     for symbol in symbols:
         try:
-            scanned += 1
-
-            ticker = yf.Ticker(symbol + ".NS")
-            df = ticker.history(period="1d", interval="5m")
-
+            df = yf.Ticker(symbol + ".NS").history(period="1d", interval="5m")
             if df.empty or len(df) < 6:
                 continue
 
-            # Opening Range (first 15 minutes = first 3 candles)
             orb_high = df["High"].iloc[:3].max()
             orb_low = df["Low"].iloc[:3].min()
+            last = df.iloc[-1]
 
-            last_close = float(df["Close"].iloc[-1])
-            last_volume = float(df["Volume"].iloc[-1])
-            avg_volume = float(df["Volume"].mean())
-
-            # Only long trades (INDmoney compatible)
-            if last_close <= orb_high:
+            if last["Close"] <= orb_high:
                 continue
 
-            passed_orb += 1
+            avg_vol = df["Volume"].mean()
+            vol_ratio = last["Volume"] / avg_vol if avg_vol > 0 else 0
 
-            if last_volume < avg_volume * VOLUME_MULTIPLIER:
+            if vol_ratio < VOLUME_MULTIPLIER:
                 continue
 
-            # Confidence scoring
-            confidence = 50
-            confidence += 15  # ORB breakout
-            confidence += 15  # volume confirmation
+            candle_range_pct = ((last["High"] - last["Low"]) / last["Low"]) * 100
+            speed = detect_speed(candle_range_pct, vol_ratio)
 
-            if nifty_bias > 0:
-                confidence += 10
-
+            confidence = 50 + 15 + 15
             if confidence < MIN_CONFIDENCE:
                 continue
 
-            entry = round(last_close, 2)
-            stop_loss = round(orb_low, 2)
-            target = round(entry * 1.02, 2)  # 2% intraday target
+            entry = round(last["Close"], 2)
+            sl = round(orb_low, 2)
+            target = round(entry * 1.02, 2)
 
             alerts.append({
                 "symbol": symbol,
                 "entry": entry,
-                "sl": stop_loss,
+                "sl": sl,
                 "target": target,
-                "confidence": confidence
+                "confidence": confidence,
+                "speed": speed,
+                "alert_time": datetime.now(IST).strftime("%H:%M"),
+                "status": "OPEN"
             })
 
             if len(alerts) >= MAX_ALERTS_PER_RUN:
@@ -142,26 +114,22 @@ def main():
             continue
 
     if not alerts:
-        print(
-            f"No signals | Scanned: {scanned} | ORB passed: {passed_orb}"
-        )
+        print("No intraday signals.")
         return
 
-    message = "*🚨 Intraday Trade Alerts (Full Market Scan)*\n\n"
+    new_trades = pd.DataFrame(alerts)
+    new_trades.to_csv(TRADES_FILE, mode="a", header=False, index=False)
 
-    for a in alerts:
-        message += (
-            f"*{a['symbol']}*\n"
-            f"Entry: {a['entry']}\n"
-            f"SL: {a['sl']}\n"
-            f"Target: {a['target']}\n"
-            f"Confidence: {a['confidence']}\n\n"
+    msg = "*🚨 Intraday Trade Alerts*\n\n"
+    for t in alerts:
+        msg += (
+            f"*{t['symbol']}*\n"
+            f"Entry: {t['entry']} | SL: {t['sl']} | Target: {t['target']}\n"
+            f"Confidence: {t['confidence']} | Speed: {t['speed']}\n\n"
         )
 
-    send_telegram(message)
-
-    print("✅ Intraday alerts sent")
-    print("⏱️ Duration:", datetime.now(IST) - start_time)
+    send_telegram(msg)
+    print("Intraday alerts sent.")
 
 
 if __name__ == "__main__":
