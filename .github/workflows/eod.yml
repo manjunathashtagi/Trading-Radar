@@ -2,14 +2,16 @@ name: End of Day Report
 
 on:
   schedule:
-    - cron: "15 10 * * 1-5"
+    - cron: "45 10 * * 1-5"   # 16:15 IST
   workflow_dispatch:
 
 jobs:
-  report:
+  eod:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -18,11 +20,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r ./requirements.txt
+          pip install -r requirements.txt
+
+      # 🔴 DOWNLOAD TRADE LEDGER
+      - name: Download trade ledger
+        uses: actions/download-artifact@v4
+        with:
+          name: trades-today
+          path: data
 
       - name: Run EOD report
+        run: |
+          python Scripts/eod_report.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python Scripts/eod_report.py
