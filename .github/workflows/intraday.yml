@@ -31,7 +31,7 @@ jobs:
 
       # 🔴 THIS IS THE IMPORTANT PART
       - name: Upload trade ledger
-        if: always()
+        if: always() && hashFiles('data/trades_today.csv') != ''
         uses: actions/upload-artifact@v4
         with:
           name: trades-today
