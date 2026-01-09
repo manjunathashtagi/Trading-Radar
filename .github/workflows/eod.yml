@@ -25,6 +25,7 @@ jobs:
       # 🔴 DOWNLOAD TRADE LEDGER
       - name: Download trade ledger
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: trades-today
           path: data
