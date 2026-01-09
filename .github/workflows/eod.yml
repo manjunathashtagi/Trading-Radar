@@ -1,8 +1,13 @@
 name: End of Day Report
 
 on:
-  schedule:
-    - cron: "45 10 * * 1-5"   # 16:15 IST
+  # 🔴 IMPORTANT: Trigger EOD AFTER Intraday Radar completes
+  workflow_run:
+    workflows: ["Intraday Radar"]
+    types:
+      - completed
+
+  # Optional: manual run
   workflow_dispatch:
 
 jobs:
@@ -22,7 +27,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # 🔴 DOWNLOAD TRADE LEDGER
+      # 🔴 Download trade ledger from the SAME intraday run
       - name: Download trade ledger
         uses: actions/download-artifact@v4
         continue-on-error: true
