@@ -1,13 +1,11 @@
 name: End of Day Report
 
 on:
-  # 🔴 IMPORTANT: Trigger EOD AFTER Intraday Radar completes
+  # 🔴 Trigger EOD after Intraday Radar finishes
   workflow_run:
     workflows: ["Intraday Radar"]
     types:
       - completed
-
-  # Optional: manual run
   workflow_dispatch:
 
 jobs:
@@ -27,7 +25,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # 🔴 Download trade ledger from the SAME intraday run
+      # 🔽 Download aggregated daily ledger
       - name: Download trade ledger
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -35,6 +33,7 @@ jobs:
           name: trades-today
           path: data
 
+      # 📊 Generate EOD report
       - name: Run EOD report
         run: |
           python Scripts/eod_report.py
