@@ -3,7 +3,7 @@ name: Premarket Universe Builder
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: '30 3 * * 1-5'   # ~9:00 IST
+    - cron: '30 3 * * 1-5'   # ~9:00 AM IST (Mon–Fri)
 
 permissions:
   contents: read
@@ -14,19 +14,16 @@ jobs:
 
     steps:
       # ----------------------------------------------------
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout repository
       # ----------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
       # ----------------------------------------------------
-      # 2️⃣ DEBUG – show real structure
+      # 2️⃣ Debug – show repo structure (keep for safety)
       # ----------------------------------------------------
       - name: Debug – list repo structure
         run: |
-          echo "PWD:"
-          pwd
-          echo ""
           echo "===== ROOT ====="
           ls -la
           echo ""
@@ -50,28 +47,50 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            echo "⚠️ requirements.txt not found"
+            echo "⚠️ requirements.txt not found — skipping"
           fi
 
       # ----------------------------------------------------
-      # 5️⃣ Generate NSE symbols (SAFE)
+      # 5️⃣ Generate NSE symbol master (STABLE)
       # ----------------------------------------------------
-      - name: Generate NSE symbols
+      - name: Generate NSE all symbols
         run: |
           if [ -f Scripts/generate_nse_all_symbols.py ]; then
             python Scripts/generate_nse_all_symbols.py
           else
-            echo "⚠️ generate_nse_all_symbols.py not found"
+            echo "❌ generate_nse_all_symbols.py not found"
+            exit 1
           fi
 
       # ----------------------------------------------------
-      # 6️⃣ Build tradable universe (SAFE)
+      # 6️⃣ Verify symbol count
+      # ----------------------------------------------------
+      - name: Verify NSE symbol count
+        run: |
+          if [ -f artifacts/nse_all_symbols.txt ]; then
+            echo "✅ Total NSE symbols generated:"
+            wc -l artifacts/nse_all_symbols.txt
+          else
+            echo "❌ symbols file missing"
+            exit 1
+          fi
+
+      # ----------------------------------------------------
+      # 7️⃣ Upload symbols as artifact
+      # ----------------------------------------------------
+      - name: Upload NSE symbols artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-all-symbols
+          path: artifacts/nse_all_symbols.txt
+
+      # ----------------------------------------------------
+      # 8️⃣ Build tradable universe (if present)
       # ----------------------------------------------------
       - name: Build tradable universe
         run: |
           if [ -f Scripts/build_tradable_universe.py ]; then
             python Scripts/build_tradable_universe.py
           else
-            echo "❌ build_tradable_universe.py NOT FOUND"
-            echo "👉 Check debug output above for correct filename"
+            echo "⚠️ build_tradable_universe.py not found — skipping liquidity filter"
           fi
