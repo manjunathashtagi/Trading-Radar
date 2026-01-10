@@ -5,7 +5,7 @@ on:
     # Every 15 minutes, Mon–Fri (IST handled in code)
     - cron: "*/15 * * * 1-5"
   workflow_dispatch:
-
+    
 jobs:
   intraday:
     runs-on: ubuntu-latest
@@ -30,8 +30,13 @@ jobs:
         with:
           name: trades-today
           path: data
-
-      # ▶ Run intraday scan (appends new trades)
+      - name: Download tradable universe
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: tradable-universe
+          path: data
+            # ▶ Run intraday scan (appends new trades)
       - name: Run intraday scan
         run: |
           python Scripts/intraday_scan.py
