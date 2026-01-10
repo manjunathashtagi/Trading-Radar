@@ -4,7 +4,7 @@ import requests
 import os
 from datetime import datetime, time, timezone, timedelta
 
-UNIVERSE_FILE = "data/universe_nse_full.csv"
+UNIVERSE_FILE = "data/universe_nse_tradable.csv"
 TRADES_FILE = "data/trades_today.csv"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
