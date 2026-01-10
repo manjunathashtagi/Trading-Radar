@@ -1,70 +1,49 @@
-import pandas as pd
-import zipfile
-import io
 import requests
-from datetime import datetime, timedelta
-import os
+import csv
+from pathlib import Path
 
-OUTPUT_FILE = "data/nse_all_symbols.csv"
+OUT_FILE = Path("artifacts/nse_all_symbols.txt")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-}
+def download_symbol_master():
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/csv"
+    }
 
-def download_latest_bhavcopy():
-    base = "https://archives.nseindia.com/content/historical/EQUITIES"
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
-    # hit homepage first (important for cookies)
-    session.get("https://www.nseindia.com", timeout=10)
-
-    for i in range(1, 8):
-        day = datetime.today() - timedelta(days=i)
-        year = day.strftime("%Y")
-        month = day.strftime("%b").upper()
-        date_str = day.strftime("%d%b%Y").upper()
-
-        url = f"{base}/{year}/{month}/cm{date_str}bhav.csv.zip"
-
-        try:
-            r = session.get(url, timeout=15)
-            if r.status_code == 200:
-                return r.content
-        except Exception:
-            continue
-
-    return None
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.text
 
 
 def main():
-    os.makedirs("data", exist_ok=True)
+    print("⬇️ Downloading NSE symbol master...")
 
-    print("⬇️ Downloading NSE bhavcopy...")
-    zip_bytes = download_latest_bhavcopy()
+    try:
+        csv_text = download_symbol_master()
+    except Exception as e:
+        print(f"❌ Failed to download symbol master: {e}")
+        print("⚠️ Using last cached symbols if available")
 
-    if zip_bytes is None:
-        if os.path.exists(OUTPUT_FILE):
-            print("⚠️ NSE blocked request — using previous universe")
+        if OUT_FILE.exists():
+            print("✅ Cached symbol list found — continuing")
             return
         else:
-            raise RuntimeError("❌ NSE bhavcopy unavailable and no fallback exists")
+            raise RuntimeError("No symbol source available")
 
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        csv_name = z.namelist()[0]
-        df = pd.read_csv(z.open(csv_name))
+    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    df = df[df["SERIES"] == "EQ"]
-    symbols = sorted(df["SYMBOL"].dropna().unique())
+    symbols = []
+    reader = csv.DictReader(csv_text.splitlines())
+    for row in reader:
+        if row[" SERIES"] == "EQ":
+            symbols.append(row["SYMBOL"].strip())
 
-    pd.DataFrame({"symbol": symbols}).to_csv(OUTPUT_FILE, index=False)
+    symbols = sorted(set(symbols))
 
-    print(f"✅ NSE universe generated: {len(symbols)} symbols")
+    OUT_FILE.write_text("\n".join(symbols))
+    print(f"✅ Saved {len(symbols)} NSE symbols to {OUT_FILE}")
 
 
 if __name__ == "__main__":
     main()
-
