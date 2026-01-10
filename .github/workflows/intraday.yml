@@ -1,53 +1,77 @@
-name: Intraday Radar
+name: Intraday Scanner
 
 on:
+  workflow_dispatch: {}
   schedule:
-    # Every 15 minutes, Mon–Fri (IST handled in code)
-    - cron: "*/15 * * * 1-5"
-  workflow_dispatch:
-    
+    - cron: '20 4 * * 1-5'   # ~9:50 AM IST (Mon–Fri)
+
+permissions:
+  contents: read
+
 jobs:
-  intraday:
+  intraday-scan:
     runs-on: ubuntu-latest
 
     steps:
+      # ----------------------------------------------------
+      # 1️⃣ Checkout repo (includes committed universe files)
+      # ----------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      # ----------------------------------------------------
+      # 2️⃣ Debug – confirm universe files exist
+      # ----------------------------------------------------
+      - name: Verify universe files
+        run: |
+          echo "===== artifacts directory ====="
+          ls -la artifacts || true
+
+          if [ ! -f artifacts/tradable_universe.txt ]; then
+            echo "❌ tradable_universe.txt NOT FOUND"
+            echo "👉 Premarket workflow may not have committed it yet"
+            exit 1
+          fi
+
+          echo "✅ Tradable universe size:"
+          wc -l artifacts/tradable_universe.txt
+
+      # ----------------------------------------------------
+      # 3️⃣ Setup Python
+      # ----------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
+      # ----------------------------------------------------
+      # 4️⃣ Install dependencies
+      # ----------------------------------------------------
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ requirements.txt not found — skipping"
+          fi
 
-      # 🔽 Download existing daily ledger (if exists)
-      - name: Download trade ledger
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: trades-today
-          path: data
-      - name: Download tradable universe
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: tradable-universe
-          path: data
-            # ▶ Run intraday scan (appends new trades)
-      - name: Run intraday scan
-        run: |
-          python Scripts/intraday_scan.py
+      # ----------------------------------------------------
+      # 5️⃣ Run intraday scanner
+      # ----------------------------------------------------
+      - name: Run intraday scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      # 🔼 Upload updated daily ledger
-      - name: Upload trade ledger
-        if: always() && hashFiles('data/trades_today.csv') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: trades-today
-          path: data/trades_today.csv
+        run: |
+          if [ -f Scripts/production_scanner_e2.py ]; then
+            python Scripts/production_scanner_e2.py \
+              --universe-file artifacts/tradable_universe.txt \
+              --interval 300 \
+              --telegram
+          else
+            echo "❌ production_scanner_e2.py not found"
+            exit 1
+          fi
