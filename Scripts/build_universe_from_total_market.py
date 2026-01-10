@@ -1,59 +1,72 @@
+from pathlib import Path
 import pandas as pd
 
-TOTAL_MARKET_FILE = "MW-NIFTY-TOTAL-MARKET-03-Jan-2026.csv"
-OUTPUT_FILE = "../data/universe_nse.csv"
+# --------------------------------------------------
+# INPUTS
+# --------------------------------------------------
 
-# Possible column names that may contain stock symbols
-SYMBOL_CANDIDATES = [
-    "SYMBOL",
-    "Symbol",
-    "NSE Symbol",
-    "NSE_SYMBOL",
-    "Stock Code",
-    "Security Code",
-    "SECURITY",
-    "NAME",
-    "NAME OF COMPANY"
-]
+# Option A: NSE symbol master (preferred, always present)
+SYMBOL_MASTER = Path("artifacts/nse_all_symbols.txt")
+
+# Option B: Total market CSV (optional, fallback)
+TOTAL_MARKET_CSV = Path("Scripts/MW-NIFTY-TOTAL-MARKET-03-Jan-2026.csv")
+
+# --------------------------------------------------
+# OUTPUT
+# --------------------------------------------------
+
+OUTPUT_FILE = Path("artifacts/tradable_universe.txt")
+
+# --------------------------------------------------
+# LOGIC
+# --------------------------------------------------
 
 def main():
-    df = pd.read_csv(TOTAL_MARKET_FILE)
+    symbols = []
 
-    print("📋 Columns found in CSV:")
-    for c in df.columns:
-        print(" -", c)
+    # ---- Preferred source ----
+    if SYMBOL_MASTER.exists():
+        print("✅ Using NSE symbol master")
+        symbols = [
+            s.strip()
+            for s in SYMBOL_MASTER.read_text().splitlines()
+            if s.strip()
+        ]
 
-    symbol_col = None
-    for col in df.columns:
-        if col.strip() in SYMBOL_CANDIDATES:
-            symbol_col = col
-            break
+    # ---- Fallback source ----
+    elif TOTAL_MARKET_CSV.exists():
+        print("⚠️ NSE symbol master missing, using total market CSV")
 
-    if not symbol_col:
-        # fallback: first column (common in NSE exports)
+        df = pd.read_csv(TOTAL_MARKET_CSV)
         symbol_col = df.columns[0]
-        print(f"⚠️ Symbol column not explicitly found, using first column: {symbol_col}")
 
-    universe = df[[symbol_col]].copy()
-    universe.columns = ["symbol"]
+        symbols = (
+            df[symbol_col]
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
 
-    universe["symbol"] = universe["symbol"].astype(str).str.strip()
+    else:
+        raise RuntimeError("❌ No universe source available")
 
-    # Drop obvious non-symbol rows
-    universe = universe[
-        universe["symbol"].str.len() <= 15
-    ]
+    # --------------------------------------------------
+    # CLEANUP
+    # --------------------------------------------------
 
-    universe["sector"] = "Unknown"
+    symbols = sorted(set(s for s in symbols if len(s) <= 15))
 
-    universe = universe.drop_duplicates(subset=["symbol"])
-    universe = universe.sort_values("symbol")
+    # --------------------------------------------------
+    # WRITE OUTPUT
+    # --------------------------------------------------
 
-    universe.to_csv(OUTPUT_FILE, index=False)
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FILE.write_text("\n".join(symbols))
 
-    print("\n✅ Universe file created successfully")
+    print(f"✅ Tradable universe created")
     print(f"📄 Output: {OUTPUT_FILE}")
-    print(f"📊 Total stocks: {len(universe)}")
+    print(f"📊 Total stocks: {len(symbols)}")
+
 
 if __name__ == "__main__":
     main()
