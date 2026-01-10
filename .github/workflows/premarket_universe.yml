@@ -89,11 +89,13 @@ jobs:
       # ----------------------------------------------------
       - name: Build tradable universe
         run: |
-          if [ -f Scripts/build_tradable_universe.py ]; then
-            python Scripts/build_tradable_universe.py
+          if [ -f Scripts/build_universe_from_total_market.py ]; then
+            python Scripts/build_universe_from_total_market.py
           else
-            echo "⚠️ build_tradable_universe.py not found — skipping liquidity filter"
+            echo "❌ build_universe_from_total_market.py NOT FOUND"
+            exit 1
           fi
+
       # ----------------------------------------------------
       # 9️⃣ Commit generated universe to repo
       # ----------------------------------------------------
