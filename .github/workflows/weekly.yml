@@ -1,28 +1,73 @@
 name: Weekly Summary
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: "30 10 * * 5"
-  workflow_dispatch:
+    - cron: "30 10 * * 5"   # Friday ~4:00 PM IST
+
+permissions:
+  contents: read
 
 jobs:
-  summary:
+  weekly-summary:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Python
+    steps:
+      # ----------------------------------------------------
+      # 1️⃣ Checkout repository (includes committed EOD CSVs)
+      # ----------------------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ----------------------------------------------------
+      # 2️⃣ Verify EOD reports exist
+      # ----------------------------------------------------
+      - name: Verify EOD reports
+        run: |
+          echo "===== reports/eod directory ====="
+          ls -la reports/eod || true
+
+          COUNT=$(ls reports/eod/eod_report_*.csv 2>/dev/null | wc -l)
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "⚠️ No EOD reports found for this week"
+          else
+            echo "✅ Found $COUNT EOD report files"
+          fi
+
+      # ----------------------------------------------------
+      # 3️⃣ Setup Python
+      # ----------------------------------------------------
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # ----------------------------------------------------
+      # 4️⃣ Install dependencies
+      # ----------------------------------------------------
       - name: Install dependencies
         run: |
-          pip install -r ./requirements.txt
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ requirements.txt not found — skipping"
+          fi
 
+      # ----------------------------------------------------
+      # 5️⃣ Run weekly summary
+      # ----------------------------------------------------
       - name: Run weekly summary
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python Scripts/weekly_summary.py
+          if [ -f Scripts/weekly_summary.py ]; then
+            python Scripts/weekly_summary.py
+          else
+            echo "❌ weekly_summary.py NOT FOUND"
+            exit 1
+          fi
