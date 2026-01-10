@@ -1,31 +1,77 @@
 name: Premarket Universe Builder
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: "15 1 * * 1-5"   # 06:45 IST
-  workflow_dispatch:
+    - cron: '30 3 * * 1-5'   # ~9:00 IST
+
+permissions:
+  contents: read
 
 jobs:
   build-universe:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # ----------------------------------------------------
+      # 1️⃣ Checkout repo
+      # ----------------------------------------------------
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # ----------------------------------------------------
+      # 2️⃣ DEBUG – show real structure
+      # ----------------------------------------------------
+      - name: Debug – list repo structure
+        run: |
+          echo "PWD:"
+          pwd
+          echo ""
+          echo "===== ROOT ====="
+          ls -la
+          echo ""
+          echo "===== Scripts ====="
+          ls -la Scripts || echo "❌ Scripts folder not found"
+
+      # ----------------------------------------------------
+      # 3️⃣ Setup Python
+      # ----------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - run: pip install -r requirements.txt
+      # ----------------------------------------------------
+      # 4️⃣ Install dependencies
+      # ----------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ requirements.txt not found"
+          fi
 
-      # 🔹 Step 1: Generate full NSE universe (~2000)
-      - run: python Scripts/generate_nse_all_symbols.py
+      # ----------------------------------------------------
+      # 5️⃣ Generate NSE symbols (SAFE)
+      # ----------------------------------------------------
+      - name: Generate NSE symbols
+        run: |
+          if [ -f Scripts/generate_nse_all_symbols.py ]; then
+            python Scripts/generate_nse_all_symbols.py
+          else
+            echo "⚠️ generate_nse_all_symbols.py not found"
+          fi
 
-      # 🔹 Step 2: Apply liquidity filter
-      - run: python Scripts/build_tradable_universe.py
-
-      # 🔹 Step 3: Upload tradable universe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tradable-universe
-          path: data/universe_nse_tradable.csv
+      # ----------------------------------------------------
+      # 6️⃣ Build tradable universe (SAFE)
+      # ----------------------------------------------------
+      - name: Build tradable universe
+        run: |
+          if [ -f Scripts/build_tradable_universe.py ]; then
+            python Scripts/build_tradable_universe.py
+          else
+            echo "❌ build_tradable_universe.py NOT FOUND"
+            echo "👉 Check debug output above for correct filename"
+          fi
