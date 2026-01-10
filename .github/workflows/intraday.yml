@@ -61,11 +61,11 @@ jobs:
       # ----------------------------------------------------
       # 5️⃣ Run intraday scanner
       # ----------------------------------------------------
-        - name: Run intraday scanner
-          env:
+      - name: Run intraday scanner
+        env:
             TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          run: |
+        run: |
             if [ -f Scripts/intraday_scan.py ]; then
               python Scripts/intraday_scan.py
             else
