@@ -66,9 +66,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -f Scripts/eod_report_e2.py ]; then
-            python Scripts/eod_report_e2.py
+          if [ -f Scripts/eod_report.py ]; then
+            python Scripts/eod_report.py
           else
-            echo "❌ eod_report_e2.py NOT FOUND"
+            echo "❌ eod_report.py NOT FOUND"
             exit 1
           fi
+
