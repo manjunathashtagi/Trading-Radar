@@ -13,16 +13,17 @@ def send_telegram(msg):
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
 def main():
-    files = sorted(glob.glob("eod_report_*.csv"))[-5:]
+    files = sorted(glob.glob("reports/eod/eod_report_*.csv"))[-5:]
 
     if not files:
+        send_telegram("📊 WEEKLY RADAR SUMMARY\n\nNo EOD reports found this week.")
         return
 
     all_data = []
 
     for f in files:
         df = pd.read_csv(f)
-        df["date"] = f.replace("eod_report_", "").replace(".csv", "")
+        df["date"] = os.path.basename(f).replace("eod_report_", "").replace(".csv", "")
         all_data.append(df)
 
     data = pd.concat(all_data, ignore_index=True)
