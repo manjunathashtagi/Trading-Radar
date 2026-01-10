@@ -6,7 +6,7 @@ on:
     - cron: '30 3 * * 1-5'   # ~9:00 AM IST (Mon–Fri)
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-universe:
@@ -93,4 +93,22 @@ jobs:
             python Scripts/build_tradable_universe.py
           else
             echo "⚠️ build_tradable_universe.py not found — skipping liquidity filter"
+          fi
+      # ----------------------------------------------------
+      # 9️⃣ Commit generated universe to repo
+      # ----------------------------------------------------
+      - name: Commit universe files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions@users.noreply.github.com"
+
+          git status
+
+          git add artifacts/*.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update NSE universe (auto)"
+            git push
           fi
