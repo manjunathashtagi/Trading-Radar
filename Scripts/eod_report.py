@@ -1,25 +1,41 @@
 import pandas as pd
+from datetime import datetime
+import pytz
 import os
 import requests
 
-TRADES_FILE = "data/trades_today.csv"
+IST = pytz.timezone("Asia/Kolkata")
 
-def send_telegram(msg):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+TRADES_FILE = "data/trades_today.csv"
+BOT = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT = os.getenv("TELEGRAM_CHAT_ID")
+
+def send(msg):
+    if not BOT:
         return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": msg})
+    requests.post(
+        f"https://api.telegram.org/bot{BOT}/sendMessage",
+        data={"chat_id": CHAT, "text": msg}
+    )
 
 def main():
     if not os.path.exists(TRADES_FILE):
-        print("No trades today.")
+        send("📉 EOD: No trades today")
         return
 
     df = pd.read_csv(TRADES_FILE)
-    report = f"📘 EOD Report\nTotal trades: {len(df)}"
-    send_telegram(report)
+
+    total = len(df)
+    avg_conf = round(df["confidence"].mean(), 1)
+
+    report = (
+        "📊 End of Day Report\n\n"
+        f"Trades: {total}\n"
+        f"Avg Confidence: {avg_conf}\n"
+        "⚠️ Outcome based on levels, not live prices"
+    )
+
+    send(report)
 
 if __name__ == "__main__":
     main()
