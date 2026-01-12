@@ -1,75 +1,38 @@
-name: EOD NSE Report
+name: End of Day Report
 
 on:
-  workflow_dispatch: {}
   schedule:
-    - cron: '15 10 * * 1-5'   # ~5:45 PM IST (Mon–Fri)
-
-permissions:
-  contents: read
+    # 16:15 IST (10:45 UTC)
+    - cron: "45 10 * * 1-5"
+  workflow_dispatch:
 
 jobs:
   eod:
     runs-on: ubuntu-latest
 
     steps:
-      # ----------------------------------------------------
-      # 1️⃣ Checkout repository
-      # ----------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      # ----------------------------------------------------
-      # 2️⃣ Verify required inputs
-      # ----------------------------------------------------
-      - name: Verify tradable universe
-        run: |
-          echo "===== artifacts directory ====="
-          ls -la artifacts || true
-
-          if [ ! -f artifacts/tradable_universe.txt ]; then
-            echo "❌ tradable_universe.txt NOT FOUND"
-            echo "👉 Premarket workflow must run first"
-            exit 1
-          fi
-
-          echo "✅ Tradable universe size:"
-          wc -l artifacts/tradable_universe.txt
-
-      # ----------------------------------------------------
-      # 3️⃣ Setup Python
-      # ----------------------------------------------------
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ----------------------------------------------------
-      # 4️⃣ Install dependencies
-      # ----------------------------------------------------
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            echo "⚠️ requirements.txt not found — skipping"
-          fi
+          pip install -r requirements.txt
 
-      # ----------------------------------------------------
-      # 5️⃣ Run EOD report
-      # ----------------------------------------------------
+      - name: Download trade ledger
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: trades-today
+          path: data
+
       - name: Run EOD report
+        run: |
+          python Scripts/eod_report.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ -f Scripts/eod_report.py ]; then
-            python Scripts/eod_report.py
-          else
-            echo "❌ eod_report.py NOT FOUND"
-            exit 1
-          fi
-
