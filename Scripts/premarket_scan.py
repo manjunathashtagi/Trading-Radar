@@ -1,9 +1,12 @@
 import pandas as pd
 import datetime
 import os
+import shutil
 import requests
 
-UNIVERSE_OUT = "data/universe_nse_tradable.csv"
+# OUTPUT FILES
+OUTPUT_UNIVERSE = "data/universe_nse_tradable.csv"
+FALLBACK_UNIVERSE = "data/universe_nse.csv"   # existing 749 universe
 
 def send_telegram(msg):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -17,29 +20,48 @@ def main():
     start = datetime.datetime.now()
     print(f"🚀 Premarket scan started at {start}")
 
-    # 👇 TEMP universe (replace with full NSE later)
-    df = pd.read_csv("data/universe_nse.csv")
+    os.makedirs("data", exist_ok=True)
+
+    # Load base universe (749 for now – stable fallback)
+    if not os.path.exists(FALLBACK_UNIVERSE):
+        raise RuntimeError("❌ Base universe missing")
+
+    df = pd.read_csv(FALLBACK_UNIVERSE)
+    print(f"📊 Total symbols to scan: {len(df)}")
 
     tradable = []
+
     for _, row in df.iterrows():
-        change = float(row.get("%CHNG", 0))
-        if abs(change) >= 2:
-            tradable.append({
-                "symbol": row["SYMBOL"],
-                "prev_day_change_pct": change
-            })
+        try:
+            change = float(row.get("%CHNG", 0))
+            if abs(change) >= 2:
+                tradable.append({
+                    "symbol": row["SYMBOL"],
+                    "prev_day_change_pct": change
+                })
+        except Exception:
+            continue
 
     tradable_df = pd.DataFrame(tradable)
-    os.makedirs("data", exist_ok=True)
-    tradable_df.to_csv(UNIVERSE_OUT, index=False)
+
+    # 🔒 GUARANTEED OUTPUT
+    if tradable_df.empty:
+        print("⚠️ No tradable stocks found. Using fallback universe.")
+        shutil.copy(FALLBACK_UNIVERSE, OUTPUT_UNIVERSE)
+        used = "fallback universe"
+    else:
+        tradable_df.to_csv(OUTPUT_UNIVERSE, index=False)
+        used = f"{len(tradable_df)} tradable stocks"
 
     send_telegram(
         f"📊 Premarket Radar\n"
-        f"Total symbols scanned: {len(df)}\n"
-        f"Tradable universe: {len(tradable_df)}"
+        f"Scanned: {len(df)} stocks\n"
+        f"Universe used: {used}"
     )
 
-    print("✅ Premarket scan completed")
+    end = datetime.datetime.now()
+    print(f"✅ Premarket scan completed at {end}")
+    print(f"⏱️ Duration: {end - start}")
 
 if __name__ == "__main__":
     main()
