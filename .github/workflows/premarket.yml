@@ -2,27 +2,36 @@ name: Premarket Scan
 
 on:
   schedule:
+    # 09:10 IST (03:40 UTC)
     - cron: "40 3 * * 1-5"
   workflow_dispatch:
 
 jobs:
-  scan:
+  premarket:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Python
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Install dependencies
         run: |
-          pip install -r ./requirements.txt
+          pip install -r requirements.txt
 
       - name: Run premarket scan
+        run: |
+          python Scripts/premarket_scan.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python Scripts/premarket_scan.py
+
+      - name: Upload tradable universe
+        uses: actions/upload-artifact@v4
+        with:
+          name: tradable-universe
+          path: data/universe_nse_tradable.csv
