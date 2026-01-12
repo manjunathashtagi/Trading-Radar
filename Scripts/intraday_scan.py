@@ -16,20 +16,19 @@ def send_telegram(msg):
 
 def market_open():
     now = datetime.datetime.now().time()
-    return now >= datetime.time(9, 15) and now <= datetime.time(15, 30)
+    return datetime.time(9, 15) <= now <= datetime.time(15, 30)
 
 def main():
     if not market_open():
         print("Market closed.")
         return
 
-    # 🔒 DO NOT FAIL IF UNIVERSE MISSING
     if not os.path.exists(UNIVERSE_FILE):
-        print("⚠️ Tradable universe missing — skipping this run")
+        print("⚠️ Universe missing. Skipping run.")
         return
 
     universe = pd.read_csv(UNIVERSE_FILE)
-    print(f"📊 Intraday scan universe size: {len(universe)}")
+    print(f"📊 Intraday universe size: {len(universe)}")
 
     trades = []
 
@@ -38,7 +37,6 @@ def main():
         if not symbol:
             continue
 
-        # Placeholder logic (stable)
         entry = 100.0
         target = round(entry * 1.02, 2)
         sl = round(entry * 0.99, 2)
@@ -51,6 +49,7 @@ def main():
             "time": datetime.datetime.now().isoformat(),
             "status": "OPEN"
         }
+
         trades.append(trade)
 
         send_telegram(
@@ -69,9 +68,6 @@ def main():
             df_trades = pd.concat([pd.read_csv(TRADES_FILE), df_trades])
 
         df_trades.to_csv(TRADES_FILE, index=False)
-        print(f"✅ Trades recorded: {len(trades)}")
-    else:
-        print("No new intraday trades.")
 
 if __name__ == "__main__":
     main()
