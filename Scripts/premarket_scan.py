@@ -1,34 +1,37 @@
 import pandas as pd
 from datetime import datetime
 import pytz
-import os
+from pathlib import Path
 
 IST = pytz.timezone("Asia/Kolkata")
 
 BASE_UNIVERSE = "data/nse_all_symbols.csv"
 OUTPUT_UNIVERSE = "data/universe_nse_tradable.csv"
 
-MIN_VOLUME = 300000
-MIN_MOVE = 1.2
-
 def main():
     now = datetime.now(IST)
     print(f"🚀 Premarket scan @ {now}")
 
+    if not Path(BASE_UNIVERSE).exists():
+        raise FileNotFoundError(f"❌ Missing {BASE_UNIVERSE}")
+
     df = pd.read_csv(BASE_UNIVERSE)
 
-    df["VOLUME"] = pd.to_numeric(df["VOLUME"], errors="coerce")
-    df["%CHNG"] = pd.to_numeric(df["%CHNG"], errors="coerce")
+    if "SYMBOL" not in df.columns:
+        raise ValueError("❌ SYMBOL column missing in base universe")
 
-    tradable = df[
-        (df["VOLUME"] >= MIN_VOLUME) &
-        (df["%CHNG"].abs() >= MIN_MOVE)
-    ][["SYMBOL", "%CHNG", "VOLUME"]]
+    # --- CLEAN ONLY (NO FILTERING) ---
+    df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+    df = df[df["SYMBOL"].str.len() > 0]
+    df = df.drop_duplicates(subset=["SYMBOL"])
 
-    os.makedirs("data", exist_ok=True)
-    tradable.to_csv(OUTPUT_UNIVERSE, index=False)
+    # Save full universe for intraday scanner
+    Path("data").mkdir(exist_ok=True)
+    df[["SYMBOL"]].to_csv(OUTPUT_UNIVERSE, index=False)
 
-    print(f"✅ Tradable universe: {len(tradable)} stocks")
+    print(f"✅ Tradable universe prepared")
+    print(f"📊 Total tradable stocks: {len(df)}")
+    print(f"📄 Saved to: {OUTPUT_UNIVERSE}")
 
 if __name__ == "__main__":
     main()
