@@ -15,7 +15,6 @@ CONF_THRESHOLD = 80
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-send("🟢 Intraday Radar heartbeat – system running")
 # --------------------------------------------------
 # Telegram helper
 # --------------------------------------------------
@@ -81,6 +80,7 @@ def confidence_score(pct, vol):
 # Main intraday scan
 # --------------------------------------------------
 def main():
+    send("🟢 Intraday Radar heartbeat – system running")
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
 
