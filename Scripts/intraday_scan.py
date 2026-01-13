@@ -80,7 +80,6 @@ def confidence_score(pct, vol):
 # Main intraday scan
 # --------------------------------------------------
 def main():
-    send("🟢 Intraday Radar heartbeat – system running")
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
 
