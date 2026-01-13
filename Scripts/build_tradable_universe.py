@@ -2,48 +2,36 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
-BASE_UNIVERSE = Path("data/nse_all_symbols.csv")
-OUT_FILE = Path("data/universe_nse_tradable.csv")
-
-# --- Filters (FINAL & SAFE) ---
-MIN_VOLUME = 200_000        # liquidity filter
-MAX_SYMBOLS = 750           # intraday practicality cap
+INPUT_FILE = Path("data/nse_all_symbols.csv")
+OUTPUT_FILE = Path("data/universe_nse_tradable.csv")
 
 def main():
     print(f"🚀 Building tradable universe @ {datetime.now()}")
 
-    if not BASE_UNIVERSE.exists():
-        raise FileNotFoundError(f"Base universe missing: {BASE_UNIVERSE}")
+    if not INPUT_FILE.exists():
+        raise FileNotFoundError(f"❌ Missing {INPUT_FILE}")
 
-    df = pd.read_csv(BASE_UNIVERSE)
+    df = pd.read_csv(INPUT_FILE)
 
     if "SYMBOL" not in df.columns:
-        raise ValueError("Base universe must contain SYMBOL column")
+        raise ValueError("❌ SYMBOL column missing")
 
-    # Ensure required columns
-    if "VOLUME" not in df.columns:
-        df["VOLUME"] = 1_000_000
-    if "%CHNG" not in df.columns:
-        df["%CHNG"] = 0.0
+    # --- VERY LIGHT CLEANING ONLY ---
+    df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+    df = df[df["SYMBOL"].str.len() > 0]
 
-    # --- Liquidity filter ---
-    tradable = df[df["VOLUME"] >= MIN_VOLUME].copy()
+    # Remove duplicates
+    df = df.drop_duplicates(subset=["SYMBOL"])
 
-    # --- Rank by momentum proxy ---
-    tradable = tradable.sort_values(
-        by=["%CHNG", "VOLUME"],
-        ascending=[False, False]
-    )
+    # 🔑 IMPORTANT: DO NOT FILTER BY VOLUME / %CHNG HERE
+    # Premarket must remain loose
 
-    # --- Cap universe size ---
-    tradable = tradable.head(MAX_SYMBOLS)
-
-    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tradable.to_csv(OUT_FILE, index=False)
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
 
     print(f"✅ Tradable universe created")
-    print(f"📊 Total tradable symbols: {len(tradable)}")
-    print(f"📄 Saved to: {OUT_FILE}")
+    print(f"📊 Total tradable symbols: {len(df)}")
+    print(f"📄 Saved to: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
