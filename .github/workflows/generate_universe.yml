@@ -20,7 +20,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install pandas
+        run: pip install -r requirements.txt
 
       - name: Generate NSE master universe
         run: python Scripts/generate_nse_master_universe.py
