@@ -15,7 +15,7 @@ CONF_THRESHOLD = 80
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
+send("🟢 Intraday Radar heartbeat – system running")
 # --------------------------------------------------
 # Telegram helper
 # --------------------------------------------------
