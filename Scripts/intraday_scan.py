@@ -9,9 +9,9 @@ IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
 
-MIN_MOVE_PCT = 1.0
+MIN_MOVE_PCT = 0.8
 MIN_VOLUME = 300000
-CONF_THRESHOLD = 80
+CONF_THRESHOLD = 70
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
