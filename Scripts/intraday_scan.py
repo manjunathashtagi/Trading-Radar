@@ -1,66 +1,72 @@
 import pandas as pd
 import requests
+import os
 from datetime import datetime
 import pytz
-import os
 
+# =========================
+# CONFIG
+# =========================
 IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
 
-# === PRACTICAL PROFESSIONAL THRESHOLDS ===
-MIN_MOVE_PCT = 0.4          # relaxed, realistic
-MIN_VOLUME = 150_000
-CONF_THRESHOLD = 55
+MIN_MOVE_PCT = 0.5        # practical intraday move
+MIN_VOLUME = 200000       # 2 lakh shares
+CONF_THRESHOLD = 60       # relaxed but meaningful
 
-def fetch_intraday_change(symbol):
-    """
-    Fetch intraday % change using NSE quote API
-    """
+# =========================
+# TELEGRAM
+# =========================
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram credentials missing")
+        return
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+
     try:
-        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "Referer": "https://www.nseindia.com/"
-        }
-        r = requests.get(url, headers=headers, timeout=5)
-        data = r.json()
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"❌ Telegram error: {e}")
 
-        price = data["priceInfo"]
-        last = price["lastPrice"]
-        prev = price["previousClose"]
-
-        if prev == 0:
-            return None
-
-        return round(((last - prev) / prev) * 100, 2)
-
-    except Exception:
-        return None
-
-def confidence_score(move_pct, volume):
+# =========================
+# SCORING LOGIC
+# =========================
+def confidence_score(pct_move, volume):
     score = 0
     reasons = []
 
-    if abs(move_pct) >= 0.4:
+    if abs(pct_move) >= 0.5:
         score += 25
         reasons.append("Momentum")
 
-    if abs(move_pct) >= 0.8:
-        score += 20
+    if abs(pct_move) >= 1.0:
+        score += 15
         reasons.append("Strong Move")
 
-    if volume >= 150_000:
+    if volume >= 200000:
         score += 20
         reasons.append("Liquidity")
 
-    if volume >= 500_000:
-        score += 15
+    if volume >= 500000:
+        score += 10
         reasons.append("High Volume")
 
-    return score, reasons
+    return score, ", ".join(reasons)
 
+# =========================
+# MAIN
+# =========================
 def main():
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
@@ -70,34 +76,29 @@ def main():
         return
 
     df = pd.read_csv(UNIVERSE_FILE)
+    print(f"📊 Symbols to scan: {len(df)}")
 
-    if "SYMBOL" not in df.columns:
-        print("❌ SYMBOL column missing")
-        return
-
-    symbols = df["SYMBOL"].dropna().unique()
-    print(f"📊 Symbols to scan: {len(symbols)}")
+    # Safety conversions
+    df["%CHNG"] = pd.to_numeric(df.get("%CHNG", 0), errors="coerce").fillna(0)
+    df["VOLUME"] = pd.to_numeric(df.get("VOLUME", 0), errors="coerce").fillna(0)
 
     signals = []
 
-    for sym in symbols:
-        move = fetch_intraday_change(sym)
-        if move is None:
+    for _, r in df.iterrows():
+        pct = r["%CHNG"]
+        vol = r["VOLUME"]
+
+        if abs(pct) < MIN_MOVE_PCT or vol < MIN_VOLUME:
             continue
 
-        volume = MIN_VOLUME  # placeholder (can be enhanced later)
-
-        if abs(move) < MIN_MOVE_PCT:
-            continue
-
-        score, reasons = confidence_score(move, volume)
+        score, reasons = confidence_score(pct, vol)
 
         if score >= CONF_THRESHOLD:
             signals.append({
-                "SYMBOL": sym,
-                "%MOVE": move,
+                "SYMBOL": r["SYMBOL"],
+                "%MOVE": round(pct, 2),
                 "SCORE": score,
-                "REASONS": ", ".join(reasons)
+                "REASONS": reasons
             })
 
     if not signals:
@@ -106,8 +107,26 @@ def main():
 
     out = pd.DataFrame(signals).sort_values("SCORE", ascending=False)
 
+    # =========================
+    # TELEGRAM MESSAGE
+    # =========================
+    msg = "🚨 <b>INTRADAY TRADE ALERTS</b>\n\n"
+
+    for _, r in out.head(10).iterrows():
+        emoji = "🟢" if r["%MOVE"] > 0 else "🔴"
+        msg += (
+            f"{emoji} <b>{r['SYMBOL']}</b>\n"
+            f"Move: {r['%MOVE']}%\n"
+            f"Score: {r['SCORE']}\n"
+            f"Reason: {r['REASONS']}\n\n"
+        )
+
+    send_telegram(msg)
+
     print("🚨 INTRADAY SIGNALS")
     print(out.head(10).to_string(index=False))
+    print("📨 Telegram alert sent")
 
+# =========================
 if __name__ == "__main__":
     main()
