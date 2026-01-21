@@ -1,195 +1,127 @@
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, time
 import pytz
 import os
-import time
 
 # ================= CONFIG =================
 IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
+STATE_FILE = "data/signals_sent_today.csv"
 
-# Momentum rules (your fixed requirements)
-MIN_MOVE_PCT = 0.8
-MIN_VOLUME = 250000
-CONF_THRESHOLD = 70
+# Momentum thresholds
+MIN_MOVE = 0.35
+MIN_VOL_MULT = 1.8
+RS_THRESHOLD = 0.4
+CONF_THRESHOLD = 65
 
-# ORB (Early Evidence)
-ORB_START = (9, 15)
-ORB_END = (9, 30)
-ORB_MIN_BREAK_PCT = 0.3
-ORB_VOLUME_RATIO = 1.3
+# ORB thresholds (fallback)
+ORB_MOVE = 0.25
+ORB_VOL_MULT = 1.4
 
-SLEEP_TIME = 0.05  # rate-limit protection
+# Telegram
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# =========================================
-
-
-# ---------- Telegram ----------
+# ================= HELPERS =================
 def send(msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram not configured")
-        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-
-
-# ---------- Live data ----------
-def fetch_intraday(symbol):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?interval=5m&range=1d"
-        r = requests.get(url, timeout=6)
-        data = r.json()["chart"]["result"][0]
-
-        quotes = data["indicators"]["quote"][0]
-        closes = quotes["close"]
-        volumes = quotes["volume"]
-
-        if not closes or closes[-1] is None or closes[0] is None:
-            return None
-
-        pct_change = ((closes[-1] - closes[0]) / closes[0]) * 100
-        total_volume = sum(v for v in volumes if v)
-
-        return {
-            "pct_change": pct_change,
-            "volume": total_volume,
-            "price": closes[-1]
-        }
-
-    except Exception:
-        return None
-
-
-# ---------- ORB (Early Evidence) ----------
-def check_orb(symbol):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?interval=5m&range=1d"
-        r = requests.get(url, timeout=6)
-        data = r.json()["chart"]["result"][0]
-
-        timestamps = data["timestamp"]
-        quotes = data["indicators"]["quote"][0]
-        closes = quotes["close"]
-        volumes = quotes["volume"]
-
-        orb_high = None
-        orb_low = None
-        orb_volume = 0
-        total_volume = 0
-
-        for ts, close, vol in zip(timestamps, closes, volumes):
-            if close is None or vol is None:
-                continue
-
-            candle_time = datetime.fromtimestamp(ts, IST)
-            total_volume += vol
-
-            if (candle_time.hour, candle_time.minute) >= ORB_START and \
-               (candle_time.hour, candle_time.minute) <= ORB_END:
-
-                orb_high = close if orb_high is None else max(orb_high, close)
-                orb_low = close if orb_low is None else min(orb_low, close)
-                orb_volume += vol
-
-        if orb_high is None or orb_volume == 0:
-            return False
-
-        last_price = closes[-1]
-        if last_price is None:
-            return False
-
-        breakout_pct = ((last_price - orb_high) / orb_high) * 100
-        vol_ratio = total_volume / orb_volume if orb_volume > 0 else 0
-
-        if breakout_pct >= ORB_MIN_BREAK_PCT and vol_ratio >= ORB_VOLUME_RATIO:
-            return True
-
-        return False
-
-    except Exception:
-        return False
-
-
-# ---------- Confidence ----------
-def confidence_score(pct, vol):
+def confidence(move, vol_mult, rs, mode):
     score = 0
     reasons = []
 
-    if abs(pct) >= 1.0:
-        score += 40
-        reasons.append("Strong move")
-    elif abs(pct) >= 0.8:
-        score += 30
-        reasons.append("Moderate move")
+    if move >= 0.25:
+        score += 25
+        reasons.append("Price acceptance")
 
-    if vol >= 400000:
-        score += 40
-        reasons.append("High volume")
-    elif vol >= 250000:
-        score += 30
-        reasons.append("Decent volume")
+    if vol_mult >= 1.4:
+        score += 25
+        reasons.append("Volume expansion")
+
+    if rs >= 0.4:
+        score += 25
+        reasons.append("Relative strength")
+
+    if mode == "Momentum" and move >= 0.8:
+        score += 15
+        reasons.append("Momentum burst")
 
     return score, reasons
 
+def market_regime(df):
+    expanding = df["%CHNG"].abs().mean()
+    if expanding >= 0.5:
+        return "Momentum"
+    return "ORB"
 
-# ---------- MAIN ----------
+# ================= MAIN =================
 def main():
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
 
     if not os.path.exists(UNIVERSE_FILE):
-        raise FileNotFoundError(f"❌ Missing {UNIVERSE_FILE}")
+        print("❌ Tradable universe missing")
+        return
 
-    universe = pd.read_csv(UNIVERSE_FILE)
-    print(f"📊 Symbols to scan: {len(universe)}")
+    df = pd.read_csv(UNIVERSE_FILE)
+    print(f"📊 Symbols to scan: {len(df)}")
+
+    sent = set()
+    if os.path.exists(STATE_FILE):
+        sent = set(pd.read_csv(STATE_FILE)["SYMBOL"])
+
+    mode = market_regime(df)
+    print(f"🧠 Market Mode: {mode}")
 
     alerts = []
 
-    for i, symbol in enumerate(universe["SYMBOL"], 1):
-
-        # STEP 1: Early evidence (ORB)
-        if not check_orb(symbol):
+    for _, r in df.iterrows():
+        sym = r["SYMBOL"]
+        if sym in sent:
             continue
 
-        # STEP 2: Momentum confirmation
-        data = fetch_intraday(symbol)
-        if not data:
+        move = float(r.get("%CHNG", 0))
+        vol = float(r.get("VOLUME", 0))
+        avg_vol = float(r.get("AVG_VOLUME", vol / 2))
+        vol_mult = vol / avg_vol if avg_vol > 0 else 0
+        rs = float(r.get("RS", move))
+
+        if mode == "Momentum":
+            if abs(move) < MIN_MOVE or vol_mult < MIN_VOL_MULT or abs(rs) < RS_THRESHOLD:
+                continue
+        else:
+            if abs(move) < ORB_MOVE or vol_mult < ORB_VOL_MULT:
+                continue
+
+        conf, reasons = confidence(abs(move), vol_mult, abs(rs), mode)
+        if conf < CONF_THRESHOLD:
             continue
 
-        pct = data["pct_change"]
-        vol = data["volume"]
-        price = data["price"]
+        side = "BUY" if move > 0 else "SELL"
 
-        if abs(pct) < MIN_MOVE_PCT or vol < MIN_VOLUME:
-            continue
+        msg = (
+            f"🚨 Intraday Trade Alert\n\n"
+            f"{sym}\n"
+            f"Mode: {mode}\n"
+            f"Side: {side}\n"
+            f"Move: {move:.2f}%\n"
+            f"Vol x: {vol_mult:.2f}\n"
+            f"RS: {rs:.2f}\n"
+            f"Confidence: {conf}\n"
+            f"Reason: {', '.join(reasons)}"
+        )
 
-        conf, reasons = confidence_score(pct, vol)
+        send(msg)
+        alerts.append(sym)
 
-        if conf >= CONF_THRESHOLD:
-            alerts.append((symbol, price, pct, conf))
-
-        if i % 100 == 0:
-            print(f"✅ Processed {i} stocks")
-
-        time.sleep(SLEEP_TIME)
-
-    if not alerts:
+    if alerts:
+        pd.DataFrame({"SYMBOL": alerts}).to_csv(STATE_FILE, index=False)
+        print(f"✅ Alerts sent: {len(alerts)}")
+    else:
         print("ℹ️ No qualified intraday signals in this run")
-        return
-
-    msg = "🚨 Intraday Trade Alerts (ORB + Momentum)\n\n"
-    for s, price, pct, conf in alerts:
-        msg += f"{s}\nPrice: {price:.2f}\nΔ {pct:.2f}% | Conf {conf}\n\n"
-
-    send(msg)
-    print(f"📨 Sent {len(alerts)} alerts")
-
 
 if __name__ == "__main__":
     main()
