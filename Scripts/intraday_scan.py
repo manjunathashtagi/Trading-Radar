@@ -1,127 +1,113 @@
 import pandas as pd
 import requests
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 import os
 
-# ================= CONFIG =================
 IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
-STATE_FILE = "data/signals_sent_today.csv"
 
-# Momentum thresholds
-MIN_MOVE = 0.35
-MIN_VOL_MULT = 1.8
-RS_THRESHOLD = 0.4
-CONF_THRESHOLD = 65
+# === PRACTICAL PROFESSIONAL THRESHOLDS ===
+MIN_MOVE_PCT = 0.4          # relaxed, realistic
+MIN_VOLUME = 150_000
+CONF_THRESHOLD = 55
 
-# ORB thresholds (fallback)
-ORB_MOVE = 0.25
-ORB_VOL_MULT = 1.4
+def fetch_intraday_change(symbol):
+    """
+    Fetch intraday % change using NSE quote API
+    """
+    try:
+        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Referer": "https://www.nseindia.com/"
+        }
+        r = requests.get(url, headers=headers, timeout=5)
+        data = r.json()
 
-# Telegram
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+        price = data["priceInfo"]
+        last = price["lastPrice"]
+        prev = price["previousClose"]
 
-# ================= HELPERS =================
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        if prev == 0:
+            return None
 
-def confidence(move, vol_mult, rs, mode):
+        return round(((last - prev) / prev) * 100, 2)
+
+    except Exception:
+        return None
+
+def confidence_score(move_pct, volume):
     score = 0
     reasons = []
 
-    if move >= 0.25:
+    if abs(move_pct) >= 0.4:
         score += 25
-        reasons.append("Price acceptance")
+        reasons.append("Momentum")
 
-    if vol_mult >= 1.4:
-        score += 25
-        reasons.append("Volume expansion")
+    if abs(move_pct) >= 0.8:
+        score += 20
+        reasons.append("Strong Move")
 
-    if rs >= 0.4:
-        score += 25
-        reasons.append("Relative strength")
+    if volume >= 150_000:
+        score += 20
+        reasons.append("Liquidity")
 
-    if mode == "Momentum" and move >= 0.8:
+    if volume >= 500_000:
         score += 15
-        reasons.append("Momentum burst")
+        reasons.append("High Volume")
 
     return score, reasons
 
-def market_regime(df):
-    expanding = df["%CHNG"].abs().mean()
-    if expanding >= 0.5:
-        return "Momentum"
-    return "ORB"
-
-# ================= MAIN =================
 def main():
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
 
     if not os.path.exists(UNIVERSE_FILE):
-        print("❌ Tradable universe missing")
+        print("❌ Tradable universe not found")
         return
 
     df = pd.read_csv(UNIVERSE_FILE)
-    print(f"📊 Symbols to scan: {len(df)}")
 
-    sent = set()
-    if os.path.exists(STATE_FILE):
-        sent = set(pd.read_csv(STATE_FILE)["SYMBOL"])
+    if "SYMBOL" not in df.columns:
+        print("❌ SYMBOL column missing")
+        return
 
-    mode = market_regime(df)
-    print(f"🧠 Market Mode: {mode}")
+    symbols = df["SYMBOL"].dropna().unique()
+    print(f"📊 Symbols to scan: {len(symbols)}")
 
-    alerts = []
+    signals = []
 
-    for _, r in df.iterrows():
-        sym = r["SYMBOL"]
-        if sym in sent:
+    for sym in symbols:
+        move = fetch_intraday_change(sym)
+        if move is None:
             continue
 
-        move = float(r.get("%CHNG", 0))
-        vol = float(r.get("VOLUME", 0))
-        avg_vol = float(r.get("AVG_VOLUME", vol / 2))
-        vol_mult = vol / avg_vol if avg_vol > 0 else 0
-        rs = float(r.get("RS", move))
+        volume = MIN_VOLUME  # placeholder (can be enhanced later)
 
-        if mode == "Momentum":
-            if abs(move) < MIN_MOVE or vol_mult < MIN_VOL_MULT or abs(rs) < RS_THRESHOLD:
-                continue
-        else:
-            if abs(move) < ORB_MOVE or vol_mult < ORB_VOL_MULT:
-                continue
-
-        conf, reasons = confidence(abs(move), vol_mult, abs(rs), mode)
-        if conf < CONF_THRESHOLD:
+        if abs(move) < MIN_MOVE_PCT:
             continue
 
-        side = "BUY" if move > 0 else "SELL"
+        score, reasons = confidence_score(move, volume)
 
-        msg = (
-            f"🚨 Intraday Trade Alert\n\n"
-            f"{sym}\n"
-            f"Mode: {mode}\n"
-            f"Side: {side}\n"
-            f"Move: {move:.2f}%\n"
-            f"Vol x: {vol_mult:.2f}\n"
-            f"RS: {rs:.2f}\n"
-            f"Confidence: {conf}\n"
-            f"Reason: {', '.join(reasons)}"
-        )
+        if score >= CONF_THRESHOLD:
+            signals.append({
+                "SYMBOL": sym,
+                "%MOVE": move,
+                "SCORE": score,
+                "REASONS": ", ".join(reasons)
+            })
 
-        send(msg)
-        alerts.append(sym)
-
-    if alerts:
-        pd.DataFrame({"SYMBOL": alerts}).to_csv(STATE_FILE, index=False)
-        print(f"✅ Alerts sent: {len(alerts)}")
-    else:
+    if not signals:
         print("ℹ️ No qualified intraday signals in this run")
+        return
+
+    out = pd.DataFrame(signals).sort_values("SCORE", ascending=False)
+
+    print("🚨 INTRADAY SIGNALS")
+    print(out.head(10).to_string(index=False))
 
 if __name__ == "__main__":
     main()
