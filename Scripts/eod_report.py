@@ -1,41 +1,46 @@
 import pandas as pd
-from datetime import datetime
-import pytz
-import os
 import requests
-
-IST = pytz.timezone("Asia/Kolkata")
+import os
 
 TRADES_FILE = "data/trades_today.csv"
-BOT = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT = os.getenv("TELEGRAM_CHAT_ID")
 
 def send(msg):
-    if not BOT:
-        return
-    requests.post(
-        f"https://api.telegram.org/bot{BOT}/sendMessage",
-        data={"chat_id": CHAT, "text": msg}
-    )
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat = os.getenv("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, data={"chat_id": chat, "text": msg})
+
+def fetch_ohlc(symbol):
+    url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Referer": "https://www.nseindia.com/"
+    }
+    r = requests.get(url, headers=headers, timeout=5)
+    price = r.json()["priceInfo"]
+    return price["intraDayHighLow"]["max"], price["intraDayHighLow"]["min"]
 
 def main():
     if not os.path.exists(TRADES_FILE):
-        send("📉 EOD: No trades today")
+        send("📉 EOD: No intraday signals today")
         return
 
     df = pd.read_csv(TRADES_FILE)
+    report = []
 
-    total = len(df)
-    avg_conf = round(df["confidence"].mean(), 1)
+    for _, r in df.iterrows():
+        high, low = fetch_ohlc(r.symbol)
+        target = r.signal_price * (1 + r.target_pct / 100)
 
-    report = (
-        "📊 End of Day Report\n\n"
-        f"Trades: {total}\n"
-        f"Avg Confidence: {avg_conf}\n"
-        "⚠️ Outcome based on levels, not live prices"
-    )
+        hit = (
+            high >= target if r.direction == "BULLISH"
+            else low <= r.signal_price * (1 - r.target_pct / 100)
+        )
 
-    send(report)
+        report.append(f"{'✅' if hit else '❌'} {r.symbol}")
+
+    send("📊 EOD Signal Outcome\n" + "\n".join(report))
 
 if __name__ == "__main__":
     main()
