@@ -1,22 +1,19 @@
 import pandas as pd
 import requests
-import os
 from datetime import datetime
 import pytz
+import os
 
 IST = pytz.timezone("Asia/Kolkata")
-TRADES_FILE = "data/trades_today.csv"
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-def send_tg(msg):
-    if not TG_TOKEN or not TG_CHAT:
-        return
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TG_CHAT, "text": msg})
+def send(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
 
-def get_close(symbol):
+def fetch_close(symbol):
     try:
         url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
         headers = {
@@ -29,29 +26,35 @@ def get_close(symbol):
         return None
 
 def main():
-    if not os.path.exists(TRADES_FILE):
-        send_tg("📉 EOD: No intraday signals today")
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    path = f"data/intraday_signals_{today}.csv"
+
+    if not os.path.exists(path):
+        send("📉 EOD: No intraday signals today")
         return
 
-    df = pd.read_csv(TRADES_FILE)
+    df = pd.read_csv(path)
     results = []
 
     for _, r in df.iterrows():
-        close = get_close(r.SYMBOL)
+        close = fetch_close(r.SYMBOL)
         if close is None:
             continue
 
-        direction = 1 if r.SIDE == "LONG" else -1
-        outcome = "✅ HIT" if (close * direction) > 0 else "❌ FAIL"
-
-        results.append(f"{r.SYMBOL} ({r.SIDE}) → {outcome}")
+        pnl = r.MOVE_PCT if r.DIRECTION == "LONG" else -r.MOVE_PCT
+        results.append(pnl)
 
     if not results:
-        send_tg("📉 EOD: No valid outcomes")
+        send("📉 EOD: Signals existed but no data available")
         return
 
-    msg = "📊 EOD REPORT\n\n" + "\n".join(results[:30])
-    send_tg(msg)
+    msg = f"📊 EOD INTRADAY SUMMARY ({today})\n\n"
+    msg += f"Total signals: {len(results)}\n"
+    msg += f"Winning: {sum(1 for x in results if x > 0)}\n"
+    msg += f"Losing: {sum(1 for x in results if x <= 0)}\n"
+    msg += f"Avg move: {round(sum(results)/len(results), 2)}%\n"
+
+    send(msg)
 
 if __name__ == "__main__":
     main()
