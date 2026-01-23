@@ -7,155 +7,105 @@ import os
 IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
+TRADES_FILE = "data/trades_today.csv"
 
-# === PRACTICAL PROFESSIONAL THRESHOLDS ===
 MIN_MOVE_PCT = 0.4
 MIN_VOLUME = 150_000
 CONF_THRESHOLD = 55
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 
-# --------------------------------------------------
-# Telegram helper
-# --------------------------------------------------
-def send(msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram not configured")
+def send_tg(msg):
+    if not TG_TOKEN or not TG_CHAT:
         return
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": TG_CHAT, "text": msg})
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg
-    }
-    requests.post(url, data=payload, timeout=10)
-
-
-# --------------------------------------------------
-# NSE intraday % move
-# --------------------------------------------------
 def fetch_intraday_change(symbol):
     try:
         url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
         headers = {
             "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
             "Referer": "https://www.nseindia.com/"
         }
-
         r = requests.get(url, headers=headers, timeout=5)
-        data = r.json()
-
-        price = data["priceInfo"]
-        last = price["lastPrice"]
-        prev = price["previousClose"]
-
-        if prev == 0:
-            return None
-
-        return round(((last - prev) / prev) * 100, 2)
-
+        p = r.json()["priceInfo"]
+        return round(((p["lastPrice"] - p["previousClose"]) / p["previousClose"]) * 100, 2)
     except Exception:
         return None
 
-
-# --------------------------------------------------
-# Confidence scoring (UNCHANGED)
-# --------------------------------------------------
-def confidence_score(move_pct, volume):
+def confidence_score(move, volume):
     score = 0
     reasons = []
 
-    if abs(move_pct) >= 0.4:
-        score += 25
-        reasons.append("Momentum")
-
-    if abs(move_pct) >= 0.8:
-        score += 20
-        reasons.append("Strong Move")
-
+    if abs(move) >= 0.4:
+        score += 25; reasons.append("Momentum")
+    if abs(move) >= 0.8:
+        score += 20; reasons.append("Strong Move")
     if volume >= 150_000:
-        score += 20
-        reasons.append("Liquidity")
+        score += 20; reasons.append("Liquidity")
 
-    if volume >= 500_000:
-        score += 15
-        reasons.append("High Volume")
+    return score, ", ".join(reasons)
 
-    return score, reasons
-
-
-# --------------------------------------------------
-# MAIN
-# --------------------------------------------------
 def main():
     now = datetime.now(IST)
     print(f"🕒 IST Time: {now}")
 
-    if not os.path.exists(UNIVERSE_FILE):
-        print("❌ Tradable universe not found")
-        return
-
     df = pd.read_csv(UNIVERSE_FILE)
-
-    if "SYMBOL" not in df.columns:
-        print("❌ SYMBOL column missing")
-        return
-
     symbols = df["SYMBOL"].dropna().unique()
-    print(f"📊 Symbols to scan: {len(symbols)}")
 
-    signals = []
+    rows = []
 
     for sym in symbols:
         move = fetch_intraday_change(sym)
-        if move is None:
+        if move is None or abs(move) < MIN_MOVE_PCT:
             continue
 
-        volume = MIN_VOLUME  # same logic as before
-
-        if abs(move) < MIN_MOVE_PCT:
+        score, reasons = confidence_score(move, MIN_VOLUME)
+        if score < CONF_THRESHOLD:
             continue
 
-        score, reasons = confidence_score(move, volume)
+        rows.append({
+            "TIME": now.strftime("%Y-%m-%d %H:%M"),
+            "SYMBOL": sym,
+            "MOVE": move,
+            "SIDE": "LONG" if move > 0 else "SHORT",
+            "SCORE": score,
+            "REASONS": reasons
+        })
 
-        if score >= CONF_THRESHOLD:
-            signals.append({
-                "SYMBOL": sym,
-                "%MOVE": move,
-                "SCORE": score,
-                "REASONS": ", ".join(reasons)
-            })
-
-    if not signals:
-        print("ℹ️ No qualified intraday signals in this run")
+    if not rows:
+        print("ℹ️ No qualified intraday signals")
         return
 
-    out = pd.DataFrame(signals)
+    out = pd.DataFrame(rows).sort_values("SCORE", ascending=False)
 
-    # ---------------- TELEGRAM AGGREGATION ----------------
-    long_df = out[out["%MOVE"] > 0].sort_values("SCORE", ascending=False).head(20)
-    short_df = out[out["%MOVE"] < 0].sort_values("SCORE", ascending=False).head(20)
+    # 👉 Persist trades (APPEND, not overwrite)
+    os.makedirs("data", exist_ok=True)
+    if os.path.exists(TRADES_FILE):
+        out.to_csv(TRADES_FILE, mode="a", header=False, index=False)
+    else:
+        out.to_csv(TRADES_FILE, index=False)
 
-    msg = f"🚨 Intraday Radar ({now.strftime('%H:%M')} IST)\n\n"
+    # 👉 Telegram (ONE MESSAGE)
+    longs = out[out["SIDE"] == "LONG"].head(20)
+    shorts = out[out["SIDE"] == "SHORT"].head(20)
 
-    if not long_df.empty:
-        msg += "🟢 TOP LONG SETUPS\n"
-        for _, r in long_df.iterrows():
-            msg += f"• {r['SYMBOL']}  {r['%MOVE']}% | Score {r['SCORE']}\n"
+    msg = "🚨 INTRADAY SIGNALS\n\n"
+
+    if not longs.empty:
+        msg += "🟢 TOP LONGS\n"
+        for _, r in longs.iterrows():
+            msg += f"{r.SYMBOL} | {r.MOVE}% | Score {r.SCORE}\n"
         msg += "\n"
 
-    if not short_df.empty:
-        msg += "🔴 TOP SHORT SETUPS\n"
-        for _, r in short_df.iterrows():
-            msg += f"• {r['SYMBOL']}  {r['%MOVE']}% | Score {r['SCORE']}\n"
-        msg += "\n"
+    if not shorts.empty:
+        msg += "🔴 TOP SHORTS\n"
+        for _, r in shorts.iterrows():
+            msg += f"{r.SYMBOL} | {r.MOVE}% | Score {r.SCORE}\n"
 
-    msg += f"Universe scanned: {len(symbols)} stocks"
-
-    send(msg)
-
+    send_tg(msg)
 
 if __name__ == "__main__":
     main()
