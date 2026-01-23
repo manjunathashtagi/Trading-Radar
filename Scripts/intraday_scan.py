@@ -93,4 +93,35 @@ def main():
         )
 
 if __name__ == "__main__":
-    main()
+    main(
+    # ================= TELEGRAM AGGREGATION =================
+
+if not signals:
+    print("ℹ️ No qualified intraday signals in this run")
+    return
+
+# Convert to DataFrame
+out = pd.DataFrame(signals)
+
+# Separate LONG & SHORT
+long_df = out[out["%MOVE"] > 0].sort_values("SCORE", ascending=False).head(20)
+short_df = out[out["%MOVE"] < 0].sort_values("SCORE", ascending=False).head(20)
+
+msg = f"🚨 Intraday Radar ({now.strftime('%H:%M')} IST)\n\n"
+
+if not long_df.empty:
+    msg += "🟢 TOP LONG SETUPS\n"
+    for _, r in long_df.iterrows():
+        msg += f"• {r['SYMBOL']}  {r['%MOVE']}% | Score {r['SCORE']}\n"
+    msg += "\n"
+
+if not short_df.empty:
+    msg += "🔴 TOP SHORT SETUPS\n"
+    for _, r in short_df.iterrows():
+        msg += f"• {r['SYMBOL']}  {r['%MOVE']}% | Score {r['SCORE']}\n"
+    msg += "\n"
+
+msg += f"Universe scanned: {len(symbols)} stocks"
+
+send(msg)
+    )
