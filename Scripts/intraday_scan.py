@@ -7,20 +7,19 @@ import os
 IST = pytz.timezone("Asia/Kolkata")
 
 UNIVERSE_FILE = "data/universe_nse_tradable.csv"
-TRADES_FILE = "data/trades_today.csv"
+OUT_DIR = "data"
 
+# === YOUR EXISTING THRESHOLDS (UNCHANGED) ===
 MIN_MOVE_PCT = 0.4
 MIN_VOLUME = 150_000
 CONF_THRESHOLD = 55
 
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-def send_tg(msg):
-    if not TG_TOKEN or not TG_CHAT:
-        return
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TG_CHAT, "text": msg})
+def send(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
 
 def fetch_intraday_change(symbol):
     try:
@@ -30,7 +29,8 @@ def fetch_intraday_change(symbol):
             "Referer": "https://www.nseindia.com/"
         }
         r = requests.get(url, headers=headers, timeout=5)
-        p = r.json()["priceInfo"]
+        data = r.json()
+        p = data["priceInfo"]
         return round(((p["lastPrice"] - p["previousClose"]) / p["previousClose"]) * 100, 2)
     except Exception:
         return None
@@ -50,62 +50,59 @@ def confidence_score(move, volume):
 
 def main():
     now = datetime.now(IST)
+    date_str = now.strftime("%Y-%m-%d")
     print(f"🕒 IST Time: {now}")
 
     df = pd.read_csv(UNIVERSE_FILE)
     symbols = df["SYMBOL"].dropna().unique()
+    print(f"📊 Symbols to scan: {len(symbols)}")
 
-    rows = []
+    signals = []
 
     for sym in symbols:
         move = fetch_intraday_change(sym)
         if move is None or abs(move) < MIN_MOVE_PCT:
             continue
 
-        score, reasons = confidence_score(move, MIN_VOLUME)
-        if score < CONF_THRESHOLD:
-            continue
+        volume = MIN_VOLUME  # placeholder (unchanged)
+        score, reasons = confidence_score(move, volume)
 
-        rows.append({
-            "TIME": now.strftime("%Y-%m-%d %H:%M"),
-            "SYMBOL": sym,
-            "MOVE": move,
-            "SIDE": "LONG" if move > 0 else "SHORT",
-            "SCORE": score,
-            "REASONS": reasons
-        })
+        if score >= CONF_THRESHOLD:
+            signals.append({
+                "DATE": date_str,
+                "SYMBOL": sym,
+                "DIRECTION": "LONG" if move > 0 else "SHORT",
+                "MOVE_PCT": move,
+                "SCORE": score,
+                "REASONS": reasons
+            })
 
-    if not rows:
-        print("ℹ️ No qualified intraday signals")
+    if not signals:
+        print("ℹ️ No qualified intraday signals in this run")
         return
 
-    out = pd.DataFrame(rows).sort_values("SCORE", ascending=False)
+    out = pd.DataFrame(signals)
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-    # 👉 Persist trades (APPEND, not overwrite)
-    os.makedirs("data", exist_ok=True)
-    if os.path.exists(TRADES_FILE):
-        out.to_csv(TRADES_FILE, mode="a", header=False, index=False)
-    else:
-        out.to_csv(TRADES_FILE, index=False)
+    csv_path = f"{OUT_DIR}/intraday_signals_{date_str}.csv"
+    out.to_csv(csv_path, index=False)
 
-    # 👉 Telegram (ONE MESSAGE)
-    longs = out[out["SIDE"] == "LONG"].head(20)
-    shorts = out[out["SIDE"] == "SHORT"].head(20)
+    # ---- TELEGRAM (ONE MESSAGE ONLY) ----
+    longs = out[out["DIRECTION"] == "LONG"].sort_values("MOVE_PCT", ascending=False).head(20)
+    shorts = out[out["DIRECTION"] == "SHORT"].sort_values("MOVE_PCT").head(20)
 
-    msg = "🚨 INTRADAY SIGNALS\n\n"
+    msg = f"🚨 INTRADAY RADAR ({now.strftime('%H:%M IST')})\n\n"
 
-    if not longs.empty:
-        msg += "🟢 TOP LONGS\n"
-        for _, r in longs.iterrows():
-            msg += f"{r.SYMBOL} | {r.MOVE}% | Score {r.SCORE}\n"
-        msg += "\n"
+    msg += "🟢 TOP LONGS\n"
+    for _, r in longs.iterrows():
+        msg += f"{r.SYMBOL} | +{r.MOVE_PCT}% | Score {r.SCORE}\n"
 
-    if not shorts.empty:
-        msg += "🔴 TOP SHORTS\n"
-        for _, r in shorts.iterrows():
-            msg += f"{r.SYMBOL} | {r.MOVE}% | Score {r.SCORE}\n"
+    msg += "\n🔴 TOP SHORTS\n"
+    for _, r in shorts.iterrows():
+        msg += f"{r.SYMBOL} | {r.MOVE_PCT}% | Score {r.SCORE}\n"
 
-    send_tg(msg)
+    send(msg)
+    print(f"✅ Saved signals → {csv_path}")
 
 if __name__ == "__main__":
     main()
