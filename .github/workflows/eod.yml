@@ -42,7 +42,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: intraday-signals
-          path: data
+          path: data/intraday_signals_*.csv
           run-id: ${{ github.event.workflow_run.id }}
 
       # -----------------------------
