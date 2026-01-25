@@ -1,14 +1,23 @@
+import sys
+from pathlib import Path
+
+# ✅ ADD PROJECT ROOT TO PYTHON PATH (MUST BE FIRST)
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# (optional debug – remove later)
+print("ROOT_DIR:", ROOT_DIR)
+print("sys.path:", sys.path)
+
+# ✅ NOW imports will work
 import json
 from datetime import datetime
-from pathlib import Path
+import pandas as pd
 
 from data.nse_realtime import fetch_realtime_ohlc
 from scanners.intraday_scanner import scan_intraday
 from alerts.telegram_alerts import send_alert
-import pandas as pd
-import sys
-print("ROOT_DIR:", ROOT_DIR)
-print("sys.path:", sys.path)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
