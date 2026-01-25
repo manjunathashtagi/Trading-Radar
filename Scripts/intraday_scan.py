@@ -1,108 +1,148 @@
-import pandas as pd
-import requests
+import json
 from datetime import datetime
-import pytz
-import os
+from pathlib import Path
 
-IST = pytz.timezone("Asia/Kolkata")
+from data.nse_realtime import fetch_realtime_ohlc
+from scanners.intraday_scanner import scan_intraday
+from alerts.telegram_alerts import send_alert
+import pandas as pd
 
-UNIVERSE_FILE = "data/universe_nse_tradable.csv"
-OUT_DIR = "data"
+# ================= CONFIG =================
 
-# === YOUR EXISTING THRESHOLDS (UNCHANGED) ===
-MIN_MOVE_PCT = 0.4
-MIN_VOLUME = 150_000
-CONF_THRESHOLD = 55
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TRADES_FILE = DATA_DIR / "trades_store.json"
+UNIVERSE_FILE = DATA_DIR / "etf_universe.csv"
 
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+MIN_SCORE = 65
 
-def fetch_intraday_change(symbol):
-    try:
-        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.nseindia.com/"
-        }
-        r = requests.get(url, headers=headers, timeout=5)
-        data = r.json()
-        p = data["priceInfo"]
-        return round(((p["lastPrice"] - p["previousClose"]) / p["previousClose"]) * 100, 2)
-    except Exception:
-        return None
+# ==========================================
 
-def confidence_score(move, volume):
-    score = 0
-    reasons = []
 
-    if abs(move) >= 0.4:
-        score += 25; reasons.append("Momentum")
-    if abs(move) >= 0.8:
-        score += 20; reasons.append("Strong Move")
-    if volume >= 150_000:
-        score += 20; reasons.append("Liquidity")
+def load_trades():
+    if TRADES_FILE.exists():
+        return json.loads(TRADES_FILE.read_text())
+    return []
 
-    return score, ", ".join(reasons)
 
-def main():
-    now = datetime.now(IST)
-    date_str = now.strftime("%Y-%m-%d")
-    print(f"🕒 IST Time: {now}")
+def save_trades(trades):
+    TRADES_FILE.write_text(json.dumps(trades, indent=2))
 
-    df = pd.read_csv(UNIVERSE_FILE)
-    symbols = df["SYMBOL"].dropna().unique()
-    print(f"📊 Symbols to scan: {len(symbols)}")
 
-    signals = []
+def calculate_levels(price, side):
+    price = round(price, 2)
 
-    for sym in symbols:
-        move = fetch_intraday_change(sym)
-        if move is None or abs(move) < MIN_MOVE_PCT:
+    if side == "LONG":
+        entry = price
+        stop_loss = round(price * 0.70, 2)     # 30% SL
+        target = round(price * 1.40, 2)        # 40% Target
+    else:
+        entry = price
+        stop_loss = round(price * 1.30, 2)
+        target = round(price * 0.60, 2)
+
+    return entry, stop_loss, target
+
+
+def trade_exists(trades, symbol, side):
+    return any(
+        t["symbol"] == symbol and
+        t["side"] == side and
+        t["status"] == "OPEN"
+        for t in trades
+    )
+
+
+# ================= MAIN =================
+
+universe = pd.read_csv(UNIVERSE_FILE)
+trades = load_trades()
+
+long_msgs = []
+short_msgs = []
+
+for _, row in universe.iterrows():
+    symbol = row["symbol"]
+
+    ohlc = fetch_realtime_ohlc(symbol)
+    if not ohlc:
+        continue
+
+    price = ohlc["close"]
+
+    signals = scan_intraday(symbol, ohlc)
+
+    for s in signals:
+        if s["confidence"] < MIN_SCORE:
             continue
 
-        volume = MIN_VOLUME  # placeholder (unchanged)
-        score, reasons = confidence_score(move, volume)
+        side = s["side"]  # LONG / SHORT
+        pct = s["pct"]
+        score = s["confidence"]
 
-        if score >= CONF_THRESHOLD:
-            signals.append({
-                "DATE": date_str,
-                "SYMBOL": sym,
-                "DIRECTION": "LONG" if move > 0 else "SHORT",
-                "MOVE_PCT": move,
-                "SCORE": score,
-                "REASONS": reasons
-            })
+        # Avoid duplicate open trades
+        if trade_exists(trades, symbol, side):
+            continue
 
-    if not signals:
-        print("ℹ️ No qualified intraday signals in this run")
-        return
+        entry, sl, target = calculate_levels(price, side)
 
-    out = pd.DataFrame(signals)
-    os.makedirs(OUT_DIR, exist_ok=True)
+        trade = {
+            "symbol": symbol,
+            "side": side,
+            "entry": entry,
+            "stop_loss": sl,
+            "target": target,
+            "status": "OPEN",
+            "entry_time": datetime.now().isoformat(),
+            "last_price": price
+        }
 
-    csv_path = f"{OUT_DIR}/intraday_signals_{date_str}.csv"
-    out.to_csv(csv_path, index=False)
+        trades.append(trade)
 
-    # ---- TELEGRAM (ONE MESSAGE ONLY) ----
-    longs = out[out["DIRECTION"] == "LONG"].sort_values("MOVE_PCT", ascending=False).head(20)
-    shorts = out[out["DIRECTION"] == "SHORT"].sort_values("MOVE_PCT").head(20)
+        line = (
+            f"{symbol} | {pct:+.2f}% | Score {score} | "
+            f"{'Buy' if side=='LONG' else 'Sell'} {entry} | "
+            f"SL {sl} | Target {target}"
+        )
 
-    msg = f"🚨 INTRADAY RADAR ({now.strftime('%H:%M IST')})\n\n"
+        if side == "LONG":
+            long_msgs.append(line)
+        else:
+            short_msgs.append(line)
 
-    msg += "🟢 TOP LONGS\n"
-    for _, r in longs.iterrows():
-        msg += f"{r.SYMBOL} | +{r.MOVE_PCT}% | Score {r.SCORE}\n"
+# ===== UPDATE EXISTING TRADES =====
 
-    msg += "\n🔴 TOP SHORTS\n"
-    for _, r in shorts.iterrows():
-        msg += f"{r.SYMBOL} | {r.MOVE_PCT}% | Score {r.SCORE}\n"
+for trade in trades:
+    if trade["status"] != "OPEN":
+        continue
 
-    send(msg)
-    print(f"✅ Saved signals → {csv_path}")
+    ltp = fetch_realtime_ohlc(trade["symbol"])["close"]
+    trade["last_price"] = ltp
 
-if __name__ == "__main__":
-    main()
+    if trade["side"] == "LONG":
+        if ltp >= trade["target"]:
+            trade["status"] = "TARGET_HIT"
+        elif ltp <= trade["stop_loss"]:
+            trade["status"] = "SL_HIT"
+    else:
+        if ltp <= trade["target"]:
+            trade["status"] = "TARGET_HIT"
+        elif ltp >= trade["stop_loss"]:
+            trade["status"] = "SL_HIT"
+
+save_trades(trades)
+
+# ===== TELEGRAM MESSAGE =====
+
+if long_msgs or short_msgs:
+    now = datetime.now().strftime("%H:%M IST")
+    msg = f"🚨 INTRADAY RADAR ({now})\n\n"
+
+    if long_msgs:
+        msg += "🟢 TOP LONGS\n" + "\n".join(long_msgs[:20]) + "\n\n"
+
+    if short_msgs:
+        msg += "🔴 TOP SHORTS\n" + "\n".join(short_msgs[:20])
+
+    send_alert(msg)
