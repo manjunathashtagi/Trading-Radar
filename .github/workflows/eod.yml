@@ -38,7 +38,7 @@ jobs:
       # 4️⃣ Wait for artifact availability (CRITICAL)
       # -----------------------------
       - name: Wait for intraday artifact
-        run: sleep 37
+        run: sleep 45
 
       # -----------------------------
       # 5️⃣ Download intraday signals
