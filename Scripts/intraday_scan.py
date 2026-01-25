@@ -29,7 +29,8 @@ DATA_DIR.mkdir(exist_ok=True)
 
 TRADES_FILE = DATA_DIR / "trades_store.json"
 UNIVERSE_FILE = DATA_DIR / "universe_nse_tradable.csv"
-
+universe = pd.read_csv(UNIVERSE_FILE)
+universe.columns = universe.columns.str.strip().str.lower()
 MIN_SCORE = 65
 
 # ==========================================
@@ -72,6 +73,9 @@ def trade_exists(trades, symbol, side):
 # ================= MAIN =================
 
 universe = pd.read_csv(UNIVERSE_FILE)
+
+# normalize column names
+universe.columns = universe.columns.str.strip().str.lower()
 trades = load_trades()
 
 long_msgs = []
