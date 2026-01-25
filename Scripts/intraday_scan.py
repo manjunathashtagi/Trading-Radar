@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import time
 
 # ✅ ADD PROJECT ROOT TO PYTHON PATH (MUST BE FIRST)
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -91,9 +92,13 @@ for _, row in universe.iterrows():
 
     ohlc = fetch_realtime_ohlc(symbol)
     if not ohlc:
+        time.sleep(0.2)   # ⬅️ HERE (after failed fetch)
         continue
 
     price = ohlc["close"]
+
+    # ⬅️ ALSO ADD HERE (after successful fetch)
+    time.sleep(0.2)
 
     signals = scan_intraday(symbol, ohlc)
 
@@ -141,11 +146,14 @@ for trade in trades:
     if trade["status"] != "OPEN":
         continue
 
-ohlc = fetch_realtime_ohlc(trade["symbol"])
-if not ohlc:
-    continue   # skip if data not available
+    ohlc = fetch_realtime_ohlc(trade["symbol"])
+    if not ohlc:
+        time.sleep(0.2)   # ⬅️ HERE
+        continue
 
-ltp = ohlc["close"]
+    ltp = ohlc["close"]
+
+    time.sleep(0.2)       # ⬅️ HERE
     trade["last_price"] = ltp
 
     if trade["side"] == "LONG":
