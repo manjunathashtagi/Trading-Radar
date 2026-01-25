@@ -35,7 +35,13 @@ jobs:
           pip install -r requirements.txt
 
       # -----------------------------
-      # 4️⃣ Download intraday signals (🔥 FIXED)
+      # 4️⃣ Wait for artifact availability (CRITICAL)
+      # -----------------------------
+      - name: Wait for intraday artifact
+        run: sleep 37
+
+      # -----------------------------
+      # 5️⃣ Download intraday signals
       # -----------------------------
       - name: Download intraday signals
         uses: actions/download-artifact@v4
@@ -45,11 +51,10 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
 
       # -----------------------------
-      # 5️⃣ Run EOD report
+      # 6️⃣ Run EOD report
       # -----------------------------
       - name: Run EOD report
-        run: |
-          python Scripts/eod_report.py
+        run: python Scripts/eod_report.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
