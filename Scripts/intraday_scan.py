@@ -6,7 +6,11 @@ from data.nse_realtime import fetch_realtime_ohlc
 from scanners.intraday_scanner import scan_intraday
 from alerts.telegram_alerts import send_alert
 import pandas as pd
+import sys
 
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
 # ================= CONFIG =================
 
 DATA_DIR = Path("data")
