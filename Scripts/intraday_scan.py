@@ -7,6 +7,8 @@ from scanners.intraday_scanner import scan_intraday
 from alerts.telegram_alerts import send_alert
 import pandas as pd
 import sys
+print("ROOT_DIR:", ROOT_DIR)
+print("sys.path:", sys.path)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
