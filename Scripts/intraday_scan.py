@@ -32,7 +32,12 @@ UNIVERSE_FILE = DATA_DIR / "universe_nse_tradable.csv"
 universe = pd.read_csv(UNIVERSE_FILE)
 universe.columns = universe.columns.str.strip().str.lower()
 MIN_SCORE = 65
+MAX_SYMBOLS = 200   # VERY IMPORTANT
 
+universe = pd.read_csv(UNIVERSE_FILE)
+universe.columns = universe.columns.str.strip().str.lower()
+
+universe = universe.head(MAX_SYMBOLS)
 # ==========================================
 
 
@@ -136,7 +141,11 @@ for trade in trades:
     if trade["status"] != "OPEN":
         continue
 
-    ltp = fetch_realtime_ohlc(trade["symbol"])["close"]
+ohlc = fetch_realtime_ohlc(trade["symbol"])
+if not ohlc:
+    continue   # skip if data not available
+
+ltp = ohlc["close"]
     trade["last_price"] = ltp
 
     if trade["side"] == "LONG":
