@@ -3,3 +3,4 @@ yfinance
 requests
 numpy
 data
+data.nse_realtime
