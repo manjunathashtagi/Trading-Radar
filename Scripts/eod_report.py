@@ -1,50 +1,37 @@
-import pandas as pd
-from datetime import datetime
-import pytz
-import os
-import requests
+import json
+from pathlib import Path
+from datetime import date
+from alerts.telegram_alerts import send_alert
 
-IST = pytz.timezone("Asia/Kolkata")
+TRADES_FILE = Path("data/trades_store.json")
 
-def send_telegram(msg):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        return
+if not TRADES_FILE.exists():
+    send_alert("📊 EOD REPORT\n\nNo intraday trades recorded today.")
+    exit()
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": msg})
+trades = json.loads(TRADES_FILE.read_text())
 
-def main():
-    today = datetime.now(IST).strftime("%Y-%m-%d")
-    file_path = f"data/intraday_signals_{today}.csv"
+total = len(trades)
+targets = sum(1 for t in trades if t["status"] == "TARGET_HIT")
+sl = sum(1 for t in trades if t["status"] == "SL_HIT")
+open_ = sum(1 for t in trades if t["status"] == "OPEN")
 
-    if not os.path.exists(file_path):
-        send_telegram("📉 EOD: No intraday signals today")
-        print("❌ No intraday CSV found")
-        return
+long_targets = sum(1 for t in trades if t["side"] == "LONG" and t["status"] == "TARGET_HIT")
+short_targets = sum(1 for t in trades if t["side"] == "SHORT" and t["status"] == "TARGET_HIT")
 
-    df = pd.read_csv(file_path)
+msg = f"""
+📊 EOD INTRADAY SUMMARY ({date.today()})
 
-    if df.empty:
-        send_telegram("📉 EOD: No intraday signals today")
-        print("❌ CSV exists but empty")
-        return
+Total Trades: {total}
 
-    total = len(df)
-    longs = df[df["DIRECTION"] == "LONG"]
-    shorts = df[df["DIRECTION"] == "SHORT"]
+🎯 Target Hit: {targets}
+   🟢 Long: {long_targets}
+   🔴 Short: {short_targets}
 
-    msg = (
-        f"📊 EOD INTRADAY SUMMARY ({today})\n\n"
-        f"Total signals: {total}\n"
-        f"🟢 Long signals: {len(longs)}\n"
-        f"🔴 Short signals: {len(shorts)}\n\n"
-        f"(Based ONLY on alerts sent during the day)"
-    )
+🛑 Stop Loss Hit: {sl}
+⏳ Still Open: {open_}
 
-    send_telegram(msg)
-    print("✅ EOD summary sent")
+(Based on actual price movement, not alerts)
+"""
 
-if __name__ == "__main__":
-    main()
+send_alert(msg)
