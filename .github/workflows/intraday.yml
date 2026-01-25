@@ -1,9 +1,11 @@
-name: Intraday + EOD Trading Radar
+name: Trading Radar – Intraday & EOD
 
 on:
   schedule:
-    # Intraday scan – every 5 minutes (IST ~ market hours)
-    - cron: "*/5 3-10 * * 1-5"
+    # Intraday: every 15 minutes during market hours (IST 9:15–15:30)
+    - cron: "*/15 4-10 * * 1-5"   # UTC → IST approx
+    # EOD trigger: once at market close
+    - cron: "0 10 * * 1-5"        # 15:30 IST ≈ 10:00 UTC
   workflow_dispatch: {}
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python Scripts/intraday_scan.py
+          python Scripts/intraday_scanner.py
 
       - name: Upload intraday signals
         uses: actions/upload-artifact@v4
@@ -44,8 +46,10 @@ jobs:
 
   eod:
     name: End of Day Report
-    needs: intraday
     runs-on: ubuntu-latest
+
+    # 🔑 THIS IS THE KEY LINE
+    if: github.event.schedule == '0 10 * * 1-5'
 
     steps:
       - name: Checkout repo
@@ -69,8 +73,7 @@ jobs:
 
       - name: Verify downloaded data
         run: |
-          echo "📂 Data folder:"
-          ls -la data || echo "❌ No data folder"
+          ls -la data || echo "❌ No intraday data"
 
       - name: Run EOD report
         env:
