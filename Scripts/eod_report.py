@@ -2,7 +2,11 @@ import json
 from pathlib import Path
 from datetime import date
 from alerts.telegram_alerts import send_alert
+import sys
 
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
 TRADES_FILE = Path("data/trades_store.json")
 
 if not TRADES_FILE.exists():
