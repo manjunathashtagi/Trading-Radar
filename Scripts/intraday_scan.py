@@ -28,7 +28,7 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 TRADES_FILE = DATA_DIR / "trades_store.json"
-UNIVERSE_FILE = DATA_DIR / "etf_universe.csv"
+UNIVERSE_FILE = DATA_DIR / "universe_nse_tradable.csv"
 
 MIN_SCORE = 65
 
