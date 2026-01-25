@@ -30,12 +30,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug: show triggering workflow run id
+      - name: "Debug: show triggering workflow run id"
         run: |
           echo "Triggering workflow run id: ${{ github.event.workflow_run.id }}"
           echo "Triggering workflow run url: ${{ github.event.workflow_run.html_url }}"
 
-      - name: (Optional) List artifacts on triggering run
+      - name: "(Optional) List artifacts on triggering run"
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq curl
