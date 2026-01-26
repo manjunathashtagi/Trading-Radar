@@ -35,7 +35,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python Scripts/intraday_scanner.py
+          python Scripts/intraday_scan.py
 
       - name: Upload intraday signals
         uses: actions/upload-artifact@v4
