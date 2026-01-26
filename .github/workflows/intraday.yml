@@ -2,11 +2,18 @@ name: Trading Radar – Intraday & EOD
 
 on:
   schedule:
-    # Intraday: every 15 minutes during market hours (IST 9:15–15:30)
-    - cron: "*/15 4-10 * * 1-5"   # UTC → IST approx
-    # EOD trigger: once at market close
-    - cron: "0 10 * * 1-5"        # 15:30 IST ≈ 10:00 UTC
-  workflow_dispatch: {}
+    # Intraday runs every 15 minutes (IST market hours approx)
+    - cron: "*/15 4-10 * * 1-5"   # UTC ≈ 09:30–15:30 IST
+
+    # EOD trigger (STRICT)
+    - cron: "0 10 * * 1-5"        # 15:30 IST
+
+  workflow_dispatch:
+    inputs:
+      run_eod:
+        description: "Force EOD report manually (true/false)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -48,8 +55,13 @@ jobs:
     name: End of Day Report
     runs-on: ubuntu-latest
 
-    # 🔑 THIS IS THE KEY LINE
-    if: github.event.schedule == '0 10 * * 1-5'
+    # ✅ STRICT CONDITION (THIS IS THE KEY)
+    # Runs ONLY:
+    # 1) At scheduled market close (15:30 IST)
+    # 2) OR when manually forced with run_eod=true
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * 1-5')
+      || (github.event_name == 'workflow_dispatch' && github.event.inputs.run_eod == 'true')
 
     steps:
       - name: Checkout repo
@@ -70,10 +82,6 @@ jobs:
         with:
           name: intraday-signals
           path: data
-
-      - name: Verify downloaded data
-        run: |
-          ls -la data || echo "❌ No intraday data"
 
       - name: Run EOD report
         env:
