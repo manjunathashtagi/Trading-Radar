@@ -1,184 +1,150 @@
 import sys
-from pathlib import Path
 import time
-
-# ✅ ADD PROJECT ROOT TO PYTHON PATH (MUST BE FIRST)
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-# (optional debug – remove later)
-print("ROOT_DIR:", ROOT_DIR)
-print("sys.path:", sys.path)
-
-# ✅ NOW imports will work
-import json
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
-
-from data.nse_realtime import fetch_realtime_ohlc
-from scanners.intraday_scanner import scan_intraday
-from alerts.telegram_alerts import send_alert
-
+import yfinance as yf
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT_DIR))
-# ================= CONFIG =================
+sys.path.insert(0, str(ROOT_DIR))
 
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
+from alerts.telegram_alerts import send_alert
+from scanners.intraday_scanner import scan_intraday
 
-TRADES_FILE = DATA_DIR / "trades_store.json"
+DATA_DIR = ROOT_DIR / "data"
 UNIVERSE_FILE = DATA_DIR / "universe_nse_tradable.csv"
-universe = pd.read_csv(UNIVERSE_FILE)
-universe.columns = universe.columns.str.strip().str.lower()
-MIN_SCORE = 65
-MAX_SYMBOLS = 200   # VERY IMPORTANT
 
-universe = pd.read_csv(UNIVERSE_FILE)
-universe.columns = universe.columns.str.strip().str.lower()
-
-universe = universe.head(MAX_SYMBOLS)
-# ==========================================
+MAX_SYMBOLS = 150   # keep Yahoo safe
 
 
-def load_trades():
-    if TRADES_FILE.exists():
-        return json.loads(TRADES_FILE.read_text())
-    return []
+# ================= MARKET METRICS =================
+
+def fetch_intraday_df(symbol):
+    try:
+        df = yf.Ticker(f"{symbol}.NS").history(
+            period="2d",
+            interval="5m",
+            auto_adjust=True
+        )
+        return df if not df.empty else None
+    except Exception:
+        return None
 
 
-def save_trades(trades):
-    TRADES_FILE.write_text(json.dumps(trades, indent=2))
+def calculate_atr(df, period=14):
+    hl = df["High"] - df["Low"]
+    hc = (df["High"] - df["Close"].shift()).abs()
+    lc = (df["Low"] - df["Close"].shift()).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(period).mean().iloc[-1]
 
 
-def calculate_levels(price, side):
-    price = round(price, 2)
+def calculate_vwap(df):
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    return (tp * df["Volume"]).sum() / df["Volume"].sum()
 
+
+def get_pdh_pdl(df):
+    df = df.copy()
+    df["date"] = df.index.date
+    days = sorted(df["date"].unique())
+    if len(days) < 2:
+        return None, None
+    prev = df[df["date"] == days[-2]]
+    return prev["High"].max(), prev["Low"].min()
+
+
+def calculate_levels(price, atr, vwap, pdh, pdl, side):
     if side == "LONG":
-        entry = price
-        stop_loss = round(price * 0.70, 2)     # 30% SL
-        target = round(price * 1.40, 2)        # 40% Target
+        target_candidates = [
+            price + 1.2 * atr,
+            pdh,
+            vwap + 0.5 * atr
+        ]
+        target = min(t for t in target_candidates if t and t > price)
+
+        sl_candidates = [
+            price - 0.8 * atr,
+            vwap,
+            pdl
+        ]
+        sl = max(s for s in sl_candidates if s and s < price)
+
     else:
-        entry = price
-        stop_loss = round(price * 1.30, 2)
-        target = round(price * 0.60, 2)
+        target_candidates = [
+            price - 1.2 * atr,
+            pdl,
+            vwap - 0.5 * atr
+        ]
+        target = max(t for t in target_candidates if t and t < price)
 
-    return entry, stop_loss, target
+        sl_candidates = [
+            price + 0.8 * atr,
+            vwap,
+            pdh
+        ]
+        sl = min(s for s in sl_candidates if s and s > price)
 
-
-def trade_exists(trades, symbol, side):
-    return any(
-        t["symbol"] == symbol and
-        t["side"] == side and
-        t["status"] == "OPEN"
-        for t in trades
-    )
+    return round(price, 2), round(sl, 2), round(target, 2)
 
 
 # ================= MAIN =================
 
 universe = pd.read_csv(UNIVERSE_FILE)
+universe.columns = universe.columns.str.lower()
+universe = universe.head(MAX_SYMBOLS)
 
-# normalize column names
-universe.columns = universe.columns.str.strip().str.lower()
-trades = load_trades()
-
-long_msgs = []
-short_msgs = []
+long_msgs, short_msgs = [], []
 
 for _, row in universe.iterrows():
     symbol = row["symbol"]
 
-    ohlc = fetch_realtime_ohlc(symbol)
-    if not ohlc:
-        time.sleep(0.2)   # ⬅️ HERE (after failed fetch)
+    df = fetch_intraday_df(symbol)
+    if df is None or len(df) < 30:
         continue
 
-    price = ohlc["close"]
+    atr = calculate_atr(df)
+    if atr is None or atr < 0.3:
+        continue
 
-    # ⬅️ ALSO ADD HERE (after successful fetch)
-    time.sleep(0.2)
+    vwap = calculate_vwap(df)
+    pdh, pdl = get_pdh_pdl(df)
+    if not pdh or not pdl:
+        continue
 
-    signals = scan_intraday(symbol, ohlc)
+    price = df.iloc[-1]["Close"]
+
+    signals = scan_intraday(symbol, df)
 
     for s in signals:
-        if s["confidence"] < MIN_SCORE:
-            continue
-
-        side = s["side"]  # LONG / SHORT
-        pct = s["pct"]
-        score = s["confidence"]
-
-        # Avoid duplicate open trades
-        if trade_exists(trades, symbol, side):
-            continue
-
-        entry, sl, target = calculate_levels(price, side)
-
-        trade = {
-            "symbol": symbol,
-            "side": side,
-            "entry": entry,
-            "stop_loss": sl,
-            "target": target,
-            "status": "OPEN",
-            "entry_time": datetime.now().isoformat(),
-            "last_price": price
-        }
-
-        trades.append(trade)
+        entry, sl, target = calculate_levels(
+            price, atr, vwap, pdh, pdl, s["side"]
+        )
 
         line = (
-            f"{symbol} | {pct:+.2f}% | Score {score} | "
-            f"{'Buy' if side=='LONG' else 'Sell'} {entry} | "
+            f"{symbol} | {s['pct']:+.2f}% | Score {s['confidence']} | "
+            f"{'Buy' if s['side']=='LONG' else 'Sell'} {entry} | "
             f"SL {sl} | Target {target}"
         )
 
-        if side == "LONG":
+        if s["side"] == "LONG":
             long_msgs.append(line)
         else:
             short_msgs.append(line)
 
-# ===== UPDATE EXISTING TRADES =====
+    time.sleep(0.2)
 
-for trade in trades:
-    if trade["status"] != "OPEN":
-        continue
 
-    ohlc = fetch_realtime_ohlc(trade["symbol"])
-    if not ohlc:
-        time.sleep(0.2)   # ⬅️ HERE
-        continue
-
-    ltp = ohlc["close"]
-
-    time.sleep(0.2)       # ⬅️ HERE
-    trade["last_price"] = ltp
-
-    if trade["side"] == "LONG":
-        if ltp >= trade["target"]:
-            trade["status"] = "TARGET_HIT"
-        elif ltp <= trade["stop_loss"]:
-            trade["status"] = "SL_HIT"
-    else:
-        if ltp <= trade["target"]:
-            trade["status"] = "TARGET_HIT"
-        elif ltp >= trade["stop_loss"]:
-            trade["status"] = "SL_HIT"
-
-save_trades(trades)
-
-# ===== TELEGRAM MESSAGE =====
+# ================= TELEGRAM =================
 
 if long_msgs or short_msgs:
     now = datetime.now().strftime("%H:%M IST")
     msg = f"🚨 INTRADAY RADAR ({now})\n\n"
 
     if long_msgs:
-        msg += "🟢 TOP LONGS\n" + "\n".join(long_msgs[:20]) + "\n\n"
+        msg += "🟢 TOP LONGS\n" + "\n".join(long_msgs[:15]) + "\n\n"
 
     if short_msgs:
-        msg += "🔴 TOP SHORTS\n" + "\n".join(short_msgs[:20])
+        msg += "🔴 TOP SHORTS\n" + "\n".join(short_msgs[:15])
 
     send_alert(msg)
