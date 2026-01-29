@@ -2,10 +2,11 @@ name: Trading Radar – Intraday & EOD
 
 on:
   schedule:
-    # Intraday runs every 15 minutes during market hours
-    - cron: "*/15 4-9 * * 1-5"     # 09:30–14:30 IST
-    # EOD run (market close)
-    - cron: "0 10 * * 1-5"        # 15:30 IST
+    # Intraday: every 15 minutes (IST 9:15–15:15 ≈ UTC 4:00–9:45)
+    - cron: "*/15 4-9 * * 1-5"
+
+    # EOD trigger (15:30 IST ≈ 10:00 UTC)
+    - cron: "0 10 * * 1-5"
 
   workflow_dispatch:
 
@@ -15,23 +16,21 @@ permissions:
 jobs:
   intraday:
     name: Intraday Scan
+    note: Runs every 15 minutes
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run intraday scanner
+      - name: Run intraday scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -41,22 +40,20 @@ jobs:
 
   eod:
     name: End of Day Report
+    note: Runs ONLY at market close
     runs-on: ubuntu-latest
 
-    # ✅ THIS IS THE ONLY SAFE CONDITION
+    # IMPORTANT: schedule-only
     if: github.event_name == 'schedule'
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
