@@ -1,16 +1,34 @@
+import sys
 import json
 from pathlib import Path
-from datetime import datetime
-import pandas as pd
+from datetime import datetime, timezone
+
 import yfinance as yf
+
+# ================= PATH FIX =================
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 
 from alerts.telegram_alerts import send_alert
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
-
 TRADES_FILE = DATA_DIR / "trades_store.json"
-UNIVERSE_FILE = DATA_DIR / "universe_nse_tradable.csv"
+
+
+# ================= TIME GUARD =================
+# Allow EOD ONLY between 15:25–15:40 IST
+
+now = datetime.now(timezone.utc)
+
+ist_hour = (now.hour + 5) % 24
+ist_min = now.minute + 30
+if ist_min >= 60:
+    ist_hour += 1
+    ist_min -= 60
+
+if not (ist_hour == 15 and 25 <= ist_min <= 40):
+    print("⏭️ Skipping EOD – not market close time")
+    sys.exit(0)
 
 
 # ================= SAFE LOAD =================
@@ -32,7 +50,7 @@ def fetch_ltp(symbol):
         df = yf.Ticker(f"{symbol}.NS").history(period="1d", interval="5m")
         if df.empty:
             return None
-        return df.iloc[-1]["Close"]
+        return float(df.iloc[-1]["Close"])
     except Exception:
         return None
 
@@ -43,7 +61,7 @@ trades = load_trades()
 
 if not trades:
     send_alert("📊 EOD REPORT\n\nNo intraday trades recorded today.")
-    exit(0)
+    sys.exit(0)
 
 total = len(trades)
 target_hit = 0
@@ -64,7 +82,6 @@ for trade in trades:
     entry = trade["entry"]
     target = trade["target"]
     sl = trade["stop_loss"]
-    status = trade.get("status", "OPEN")
 
     ltp = fetch_ltp(symbol)
     if ltp is None:
@@ -72,6 +89,7 @@ for trade in trades:
         continue
 
     if side == "LONG":
+        long_trades += 1
         if ltp >= target:
             trade["status"] = "TARGET_HIT"
             target_hit += 1
@@ -85,9 +103,8 @@ for trade in trades:
         else:
             open_trades += 1
 
-        long_trades += 1
-
     else:  # SHORT
+        short_trades += 1
         if ltp <= target:
             trade["status"] = "TARGET_HIT"
             target_hit += 1
@@ -100,8 +117,6 @@ for trade in trades:
             sl_symbols.append(symbol)
         else:
             open_trades += 1
-
-        short_trades += 1
 
 
 save_trades(trades)
