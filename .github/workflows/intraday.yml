@@ -5,7 +5,7 @@ on:
     # Intraday: every 15 minutes (IST 9:15–15:15 ≈ UTC 4:00–9:45)
     - cron: "*/15 4-9 * * 1-5"
 
-    # EOD trigger (15:30 IST ≈ 10:00 UTC)
+    # EOD trigger: market close (15:30 IST ≈ 10:00 UTC)
     - cron: "0 10 * * 1-5"
 
   workflow_dispatch:
@@ -16,7 +16,6 @@ permissions:
 jobs:
   intraday:
     name: Intraday Scan
-    note: Runs every 15 minutes
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +25,8 @@ jobs:
         with:
           python-version: "3.10"
 
-      - run: |
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
@@ -40,10 +40,9 @@ jobs:
 
   eod:
     name: End of Day Report
-    note: Runs ONLY at market close
     runs-on: ubuntu-latest
 
-    # IMPORTANT: schedule-only
+    # Run only on scheduled events (extra safety)
     if: github.event_name == 'schedule'
 
     steps:
@@ -53,7 +52,8 @@ jobs:
         with:
           python-version: "3.10"
 
-      - run: |
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
