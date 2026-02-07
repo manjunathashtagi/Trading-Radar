@@ -2,46 +2,45 @@ import pandas as pd
 from nsepython import equity_history
 from datetime import datetime, timedelta
 
-CACHE_FILE = "data/stage1_cache.csv"
+CACHE = "data/stage1_cache.csv"
 
-def stage1_shortlist(symbols_df, limit=120, force=False):
+def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
 
-    # ---- LOAD CACHE IF EXISTS ----
-    if not force:
+    try:
+        cache = pd.read_csv(CACHE, parse_dates=["date"])
+        if cache["date"].iloc[0].date() == today:
+            return cache
+    except Exception:
+        pass
+
+    rows = []
+    to_d = datetime.now()
+    from_d = to_d - timedelta(days=5)
+
+    for sym in universe["symbol"]:
         try:
-            cache = pd.read_csv(CACHE_FILE, parse_dates=["date"])
-            cache_date = cache["date"].iloc[0].date()
-
-            if cache_date == today:
-                return cache["symbol"].tolist()
-        except Exception:
-            pass
-
-    shortlisted = []
-    to_date = datetime.now()
-    from_date = to_date - timedelta(days=5)
-
-    for sym in symbols_df["symbol"]:
-        try:
-            df = equity_history(
-                symbol=sym,
-                series="EQ",
-                start_date=from_date.strftime("%d-%m-%Y"),
-                end_date=to_date.strftime("%d-%m-%Y")
+            df = equity_history(sym, "EQ",
+                from_d.strftime("%d-%m-%Y"),
+                to_d.strftime("%d-%m-%Y")
             )
-
             if df is None or len(df) < 2:
                 continue
 
             df = df.tail(2)
+            pct = ((df.iloc[-1]["CLOSE"] - df.iloc[-2]["CLOSE"])
+                  / df.iloc[-2]["CLOSE"]) * 100
+            vol = df.iloc[-1]["VOLUME"] / max(df.iloc[-2]["VOLUME"], 1)
 
-            c1, c0 = df.iloc[-1]["CLOSE"], df.iloc[-2]["CLOSE"]
-            v1, v0 = df.iloc[-1]["VOLUME"], df.iloc[-2]["VOLUME"]
+            if abs(pct) > 2 and vol > 1.5:
+                rows.append({
+                    "symbol": sym,
+                    "score": abs(pct) * vol,
+                    "date": today
+                })
+        except Exception:
+            continue
 
-            pct = ((c1 - c0) / c0) * 100
-            vol_ratio = v1 / max(v0, 1)
-
-            if abs(pct) > 2 and vol_ratio > 1.5:
-                shortlisted.append({
-                    "symbol
+    df = pd.DataFrame(rows).sort_values("score", ascending=False).head(limit)
+    df.to_csv(CACHE, index=False)
+    return df
