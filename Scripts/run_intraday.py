@@ -7,7 +7,6 @@ if PROJECT_ROOT not in sys.path:
 
 import pandas as pd
 from datetime import datetime
-from scanners.intraday_scanner import scan_intraday
 from data_feed.nse_fetcher import fetch_nse_ohlc
 from alerts.telegram_alerts import send_alert
 
