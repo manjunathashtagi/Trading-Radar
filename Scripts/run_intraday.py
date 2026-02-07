@@ -1,62 +1,70 @@
 import sys, os
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, os.path.abspath(""))
 
 import pandas as pd
 from datetime import datetime
 from alerts.telegram_alerts import send_alert
-from scanners.intraday_scanner import scan_intraday
 from data_feed.nse_fetcher import fetch_nse_ohlc
 from data_feed.nse_universe import get_all_nse_symbols
 from data_feed.stage1_filter import stage1_shortlist
+from analytics.sector_strength import sector_strength
+from scanners.intraday_scanner import scan_intraday
+from analytics.trade_tracker import check_trade
 
-DATA_FILE = "data/signals.csv"
 os.makedirs("data", exist_ok=True)
 
+try:
+    trades = pd.read_csv("data/signals.csv")
+except:
+    trades = pd.DataFrame(columns=["time","symbol","signal","price","sl","tp","status","confidence"])
+
+# ---- STAGE 1 ----
+universe = get_all_nse_symbols()
+stage1 = stage1_shortlist(universe)
+sectors = sector_strength(stage1)
+
+send_alert(f"📡 Stage-1 ready | {len(stage1)} stocks")
+
 today = datetime.now().date()
-already_alerted = set(
-    signals_df[
-        pd.to_datetime(signals_df["time"]).dt.date == today
-    ]["symbol"].tolist()
-)
+alerted = set(trades[pd.to_datetime(trades["time"]).dt.date == today]["symbol"])
 
-if symbol in already_alerted:
-    continue
+# ---- STAGE 2 ----
+for _, row in stage1.iterrows():
+    sym = row["symbol"]
+    if sym in alerted:
+        continue
 
-if not os.path.exists(DATA_FILE):
-    pd.DataFrame(columns=["time", "symbol", "signal", "price"]).to_csv(DATA_FILE, index=False)
-
-signals_df = pd.read_csv(DATA_FILE)
-
-# -------- STAGE 1 (ONCE PER DAY) --------
-universe_df = get_all_nse_symbols()
-shortlist = stage1_shortlist(universe_df)
-
-send_alert(
-    f"📡 Stage-1 (cached)\n"
-    f"Shortlisted stocks: {len(shortlist)}"
-)
-
-# -------- STAGE 2 --------
-for symbol in shortlist:
-    df = fetch_nse_ohlc(symbol)
+    df = fetch_nse_ohlc(sym)
     if df.empty:
         continue
 
-    result = scan_intraday(symbol, df)
-    if result:
-        side, price = result
+    res = scan_intraday(df, sector_bonus=10)
+    if not res:
+        continue
 
-        send_alert(
-            f"🚨 <b>{side} SIGNAL</b>\n"
-            f"Stock: {symbol}\n"
-            f"Price: {round(price,2)}\n"
-            f"TF: 15m\n"
-            f"Strategy: Alpha"
-        )
+    side, price, atr, conf = res
+    sl = price - atr if side == "BUY" else price + atr
+    tp = price + 2*atr if side == "BUY" else price - 2*atr
 
-        signals_df.loc[len(signals_df)] = [
-            datetime.now(), symbol, side, price
-        ]
+    send_alert(
+        f"🚨 <b>{side}</b> {sym}\n"
+        f"Price: {round(price,2)}\n"
+        f"Confidence: {conf}%\n"
+        f"SL: {round(sl,2)} | TP: {round(tp,2)}"
+    )
 
-signals_df.to_csv(DATA_FILE, index=False)
+    trades.loc[len(trades)] = [
+        datetime.now(), sym, side, price, sl, tp, "OPEN", conf
+    ]
+
+# ---- TRACK OPEN TRADES ----
+for i, r in trades[trades["status"]=="OPEN"].iterrows():
+    df = fetch_nse_ohlc(r["symbol"])
+    if df.empty:
+        continue
+    status = check_trade(r, df["close"].iloc[-1])
+    if status != "OPEN":
+        trades.at[i,"status"] = status
+        send_alert(f"📌 {r['symbol']} {status}")
+
+trades.to_csv("data/signals.csv", index=False)
