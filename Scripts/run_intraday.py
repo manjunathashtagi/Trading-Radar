@@ -13,6 +13,16 @@ from data_feed.stage1_filter import stage1_shortlist
 DATA_FILE = "data/signals.csv"
 os.makedirs("data", exist_ok=True)
 
+today = datetime.now().date()
+already_alerted = set(
+    signals_df[
+        pd.to_datetime(signals_df["time"]).dt.date == today
+    ]["symbol"].tolist()
+)
+
+if symbol in already_alerted:
+    continue
+
 if not os.path.exists(DATA_FILE):
     pd.DataFrame(columns=["time", "symbol", "signal", "price"]).to_csv(DATA_FILE, index=False)
 
