@@ -2,7 +2,7 @@ name: Intraday Alpha Scan
 
 on:
   schedule:
-    - cron: "*/15 * * * 1-5"
+    - cron: "*/15 3-10 * * 1-5"   # 09:15–15:45 IST
   workflow_dispatch:
 
 jobs:
@@ -22,22 +22,9 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Download Stage-1 Cache
-        uses: actions/download-artifact@v4
-        with:
-          name: stage1-cache
-          path: data
-        continue-on-error: true
-
       - name: Run Intraday Scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python Scripts/run_intraday.py
-
-      - name: Upload Stage-1 Cache (keep alive)
-        uses: actions/upload-artifact@v4
-        with:
-          name: stage1-cache
-          path: data/stage1_cache.csv
