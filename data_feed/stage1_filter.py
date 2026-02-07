@@ -2,9 +2,23 @@ import pandas as pd
 from nsepython import equity_history
 from datetime import datetime, timedelta
 
-def stage1_shortlist(symbols_df, limit=120):
-    shortlisted = []
+CACHE_FILE = "data/stage1_cache.csv"
 
+def stage1_shortlist(symbols_df, limit=120, force=False):
+    today = datetime.now().date()
+
+    # ---- LOAD CACHE IF EXISTS ----
+    if not force:
+        try:
+            cache = pd.read_csv(CACHE_FILE, parse_dates=["date"])
+            cache_date = cache["date"].iloc[0].date()
+
+            if cache_date == today:
+                return cache["symbol"].tolist()
+        except Exception:
+            pass
+
+    shortlisted = []
     to_date = datetime.now()
     from_date = to_date - timedelta(days=5)
 
@@ -22,31 +36,12 @@ def stage1_shortlist(symbols_df, limit=120):
 
             df = df.tail(2)
 
-            close_today = df.iloc[-1]["CLOSE"]
-            close_prev = df.iloc[-2]["CLOSE"]
+            c1, c0 = df.iloc[-1]["CLOSE"], df.iloc[-2]["CLOSE"]
+            v1, v0 = df.iloc[-1]["VOLUME"], df.iloc[-2]["VOLUME"]
 
-            vol_today = df.iloc[-1]["VOLUME"]
-            vol_prev = df.iloc[-2]["VOLUME"]
+            pct = ((c1 - c0) / c0) * 100
+            vol_ratio = v1 / max(v0, 1)
 
-            pct_change = ((close_today - close_prev) / close_prev) * 100
-            vol_ratio = vol_today / max(vol_prev, 1)
-
-            if abs(pct_change) > 2 and vol_ratio > 1.5:
+            if abs(pct) > 2 and vol_ratio > 1.5:
                 shortlisted.append({
-                    "symbol": sym,
-                    "pct_change": pct_change,
-                    "vol_ratio": vol_ratio
-                })
-
-        except Exception:
-            continue
-
-    df_short = pd.DataFrame(shortlisted)
-
-    if df_short.empty:
-        return []
-
-    df_short["score"] = abs(df_short["pct_change"]) * df_short["vol_ratio"]
-    df_short = df_short.sort_values("score", ascending=False)
-
-    return df_short.head(limit)["symbol"].tolist()
+                    "symbol
