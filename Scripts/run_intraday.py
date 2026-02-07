@@ -1,28 +1,31 @@
-import sys
-import os
-
+import sys, os
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, PROJECT_ROOT)
 
 import pandas as pd
 from datetime import datetime
-from data_feed.nse_fetcher import fetch_nse_ohlc
 from alerts.telegram_alerts import send_alert
+from scanners.intraday_scanner import scan_intraday
+from data_feed.nse_fetcher import fetch_nse_ohlc
+from data_feed.nse_universe import get_all_nse_symbols
+from data_feed.stage1_filter import stage1_shortlist
 
-SYMBOLS = ["RELIANCE", "ICICIBANK", "SBIN", "INFY"]
 DATA_FILE = "data/signals.csv"
-
 os.makedirs("data", exist_ok=True)
 
 if not os.path.exists(DATA_FILE):
-    pd.DataFrame(columns=[
-        "time", "symbol", "signal", "price"
-    ]).to_csv(DATA_FILE, index=False)
+    pd.DataFrame(columns=["time", "symbol", "signal", "price"]).to_csv(DATA_FILE, index=False)
 
 signals_df = pd.read_csv(DATA_FILE)
 
-for symbol in SYMBOLS:
+# -------- STAGE 1 --------
+universe_df = get_all_nse_symbols()
+shortlist = stage1_shortlist(universe_df)
+
+send_alert(f"📡 Stage-1 complete\nShortlisted: {len(shortlist)} stocks")
+
+# -------- STAGE 2 --------
+for symbol in shortlist:
     df = fetch_nse_ohlc(symbol)
     if df.empty:
         continue
