@@ -6,11 +6,18 @@ CACHE = "data/stage1_cache.csv"
 
 def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
+    total_scanned = len(universe)
 
     # ---- Try cache first ----
     try:
         cache = pd.read_csv(CACHE, parse_dates=["date"])
         if not cache.empty and cache["date"].iloc[0].date() == today:
+            print(
+                f"[STAGE-1 CACHE] "
+                f"Scanned: {total_scanned} | "
+                f"Qualified: {len(cache)} | "
+                f"Date: {today}"
+            )
             return cache
     except Exception:
         pass
@@ -22,7 +29,8 @@ def stage1_shortlist(universe, limit=120):
     for sym in universe["symbol"]:
         try:
             df = equity_history(
-                sym, "EQ",
+                sym,
+                "EQ",
                 from_d.strftime("%d-%m-%Y"),
                 to_d.strftime("%d-%m-%Y")
             )
@@ -48,16 +56,31 @@ def stage1_shortlist(universe, limit=120):
         except Exception:
             continue
 
-    # ---- SAFE HANDLING OF EMPTY RESULT ----
+    # ---- SAFE EMPTY HANDLING ----
     if not rows:
         df_empty = pd.DataFrame(columns=["symbol", "score"])
         df_empty["date"] = today
         df_empty.to_csv(CACHE, index=False)
+
+        print(
+            f"[STAGE-1 DONE] "
+            f"Scanned: {total_scanned} | "
+            f"Qualified: 0 | "
+            f"Date: {today}"
+        )
+
         return df_empty
 
     df = pd.DataFrame(rows)
     df = df.sort_values("score", ascending=False).head(limit)
     df["date"] = today
     df.to_csv(CACHE, index=False)
+
+    print(
+        f"[STAGE-1 DONE] "
+        f"Scanned: {total_scanned} | "
+        f"Qualified: {len(df)} | "
+        f"Date: {today}"
+    )
 
     return df
