@@ -1,0 +1,49 @@
+name: Daily NSE Stage-1 Builder
+
+on:
+  schedule:
+    - cron: "50 2 * * 1-5"   # 08:20 IST
+  workflow_dispatch:
+
+jobs:
+  stage1:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Stage-1 Builder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - << 'EOF'
+          from data_feed.nse_universe import get_all_nse_symbols
+          from data_feed.stage1_filter import stage1_shortlist
+          from alerts.telegram_alerts import send_alert
+
+          universe = get_all_nse_symbols()
+          stage1 = stage1_shortlist(universe)
+
+          send_alert(
+              f"🌅 <b>Pre-Market Scan Ready</b>\n"
+              f"Shortlisted stocks: {len(stage1)}\n"
+              f"Time: Before market open"
+          )
+          EOF
+
+      - name: Upload Stage-1 Cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage1-cache
+          path: data/stage1_cache.csv
