@@ -2,7 +2,7 @@ name: Daily NSE Stage-1 Builder
 
 on:
   schedule:
-    - cron: "35 3 * * 1-5"
+    - cron: "35 3 * * 1-5"   # 09:05 IST
   workflow_dispatch:
 
 jobs:
@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -20,9 +22,10 @@ jobs:
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Stage-1 Builder
+      - name: Run Stage-1 Scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -31,19 +34,23 @@ jobs:
           from data_feed.nse_universe import get_all_nse_symbols
           from data_feed.stage1_filter import stage1_shortlist
           from alerts.telegram_alerts import send_alert
+          from datetime import date
 
           universe = get_all_nse_symbols()
           stage1 = stage1_shortlist(universe)
 
           send_alert(
               f"🌅 <b>Pre-Market Scan Ready</b>\n"
-              f"Shortlisted stocks: {len(stage1)}\n"
-              f"Time: Before market open"
+              f"Scanned: {len(universe)}\n"
+              f"Qualified: {len(stage1)}\n"
+              f"Date: {date.today()}"
           )
           EOF
 
-      - name: Upload Stage-1 Cache
-        uses: actions/upload-artifact@v4
-        with:
-          name: stage1-cache
-          path: data/stage1_cache.csv
+      - name: Commit Stage-1 Cache
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/stage1_cache.csv
+          git commit -m "Auto: update Stage-1 cache" || echo "No changes"
+          git push
