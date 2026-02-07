@@ -1,21 +1,13 @@
 import pandas as pd
 
-def sector_strength(shortlist_df):
-    sector_map = pd.read_csv("data/sector_map.csv")
+def sector_strength(stage1_df):
+    sm = pd.read_csv("data/sector_map.csv")
+    df = stage1_df.merge(sm, on="symbol", how="left").dropna()
 
-    df = shortlist_df.merge(sector_map, on="symbol", how="left")
-    df = df.dropna(subset=["sector"])
-
-    strength = (
+    sec = (
         df.groupby("sector")
-        .agg(
-            stocks=("symbol", "count"),
-            avg_score=("score", "mean")
-        )
+        .agg(stocks=("symbol", "count"), score=("score", "mean"))
         .reset_index()
     )
-
-    strength["rank_score"] = strength["stocks"] * strength["avg_score"]
-    strength = strength.sort_values("rank_score", ascending=False)
-
-    return strength
+    sec["rank"] = sec["stocks"] * sec["score"]
+    return sec.sort_values("rank", ascending=False)
