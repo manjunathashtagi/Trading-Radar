@@ -18,11 +18,14 @@ if not os.path.exists(DATA_FILE):
 
 signals_df = pd.read_csv(DATA_FILE)
 
-# -------- STAGE 1 --------
+# -------- STAGE 1 (ONCE PER DAY) --------
 universe_df = get_all_nse_symbols()
 shortlist = stage1_shortlist(universe_df)
 
-send_alert(f"📡 Stage-1 complete\nShortlisted: {len(shortlist)} stocks")
+send_alert(
+    f"📡 Stage-1 (cached)\n"
+    f"Shortlisted stocks: {len(shortlist)}"
+)
 
 # -------- STAGE 2 --------
 for symbol in shortlist:
