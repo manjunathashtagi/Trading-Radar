@@ -6,6 +6,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from scanners.intraday_scanner import scan_intraday
 
+def confidence_score(trend, momentum, atr_ok, structure, sector_bonus=0):
+    score = 0
+    score += 25 if trend else 0
+    score += 25 if momentum else 0
+    score += 20 if atr_ok else 0
+    score += 20 if structure else 0
+    score += sector_bonus
+    return min(score, 100)
+
 def scan_intraday(symbol: str, df: pd.DataFrame):
     if len(df) < 200:
         return None
@@ -51,4 +60,12 @@ def scan_intraday(symbol: str, df: pd.DataFrame):
     if trend_bear and momentum_bear and atr_ok and structure_bear and strong:
         return "SELL", df["close"].iloc[-1]
 
-    return None
+conf = confidence_score(
+    trend_bull or trend_bear,
+    momentum_bull or momentum_bear,
+    atr_ok,
+    structure_bull or structure_bear,
+    sector_bonus=10  # filled later
+)
+
+return side, price, conf
