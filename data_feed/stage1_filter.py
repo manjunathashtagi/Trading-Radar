@@ -40,7 +40,20 @@ def stage1_shortlist(universe, limit=120):
                 })
         except Exception:
             continue
+    df = pd.DataFrame(rows)
 
-    df = pd.DataFrame(rows).sort_values("score", ascending=False).head(limit)
+    # ---- SAFETY CHECK ----
+    if df.empty:
+        # create empty cache so intraday can still run
+        df = pd.DataFrame(columns=["symbol", "score"])
+        df["date"] = today
+        df.to_csv(CACHE, index=False)
+        return df
+
+    df = df.sort_values("score", ascending=False).head(limit)
+    df["date"] = today
     df.to_csv(CACHE, index=False)
+
+    return df
+
     return df
