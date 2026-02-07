@@ -1,5 +1,10 @@
 import pandas as pd
 import numpy as np
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from scanners.intraday_scanner import scan_intraday
 
 def scan_intraday(symbol: str, df: pd.DataFrame):
     if len(df) < 200:
