@@ -8,7 +8,7 @@ def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
     total_scanned = len(universe)
 
-    # ---- Try cache first ----
+    # ---------- TRY CACHE FIRST ----------
     try:
         cache = pd.read_csv(CACHE, parse_dates=["date"])
         if not cache.empty and cache["date"].iloc[0].date() == today:
@@ -39,24 +39,24 @@ def stage1_shortlist(universe, limit=120):
                 continue
 
             df = df.tail(2)
+
             close_now = df.iloc[-1]["CLOSE"]
             close_prev = df.iloc[-2]["CLOSE"]
-            vol_now = df.iloc[-1]["VOLUME"]
-            vol_prev = df.iloc[-2]["VOLUME"]
 
-            pct = ((close_now - close_prev) / close_prev) * 100
-            vol_ratio = vol_now / max(vol_prev, 1)
+            pct_change = ((close_now - close_prev) / close_prev) * 100
 
-            if abs(pct) > 2 and vol_ratio > 1.5:
+            # ✅ NSE-APPROPRIATE PRE-MARKET FILTER
+            # No volume filter (NSE pre-open volume is meaningless)
+            if abs(pct_change) >= 0.8:
                 rows.append({
                     "symbol": sym,
-                    "score": abs(pct) * vol_ratio
+                    "score": abs(pct_change)
                 })
 
         except Exception:
             continue
 
-    # ---- SAFE EMPTY HANDLING ----
+    # ---------- SAFE EMPTY HANDLING ----------
     if not rows:
         df_empty = pd.DataFrame(columns=["symbol", "score"])
         df_empty["date"] = today
