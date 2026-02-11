@@ -17,6 +17,7 @@ READY_LOG_FILE = "data/stage1_ready_sent.txt"
 
 def load_stage1_watchlist():
     if not os.path.exists(CACHE_FILE):
+        print("No stage1 cache found.")
         return pd.DataFrame()
 
     df = pd.read_csv(CACHE_FILE)
@@ -40,10 +41,11 @@ def save_alerted_symbol(symbol):
         df.to_csv(ALERT_LOG_FILE, mode="a", header=False, index=False)
     else:
         df.to_csv(ALERT_LOG_FILE, index=False)
-    print(f"Scanning {len(stage1_df)} stocks...")
+
 
 def send_stage1_ready_once(count):
     today = str(datetime.now().date())
+
     if os.path.exists(READY_LOG_FILE):
         with open(READY_LOG_FILE, "r") as f:
             if f.read().strip() == today:
@@ -58,11 +60,14 @@ def main():
     stage1_df = load_stage1_watchlist()
 
     if stage1_df.empty:
+        print("Stage-1 list empty.")
         return
 
+    print(f"Scanning {len(stage1_df)} stocks...")
     send_stage1_ready_once(len(stage1_df))
 
     alerted_symbols = load_alerted_symbols()
+    signals_found = 0
 
     for _, row in stage1_df.iterrows():
         symbol = row["symbol"]
@@ -72,7 +77,8 @@ def main():
 
         signal = scan_intraday(symbol)
 
-        if signal and signal["action"] in ["BUY", "SELL"]:
+        if signal:
+            signals_found += 1
 
             message = (
                 f"🚨 <b>{signal['action']} SIGNAL</b>\n\n"
@@ -89,6 +95,8 @@ def main():
 
             send_alert(message)
             save_alerted_symbol(symbol)
+
+    print(f"Scan complete. Signals found: {signals_found}")
 
 
 if __name__ == "__main__":
