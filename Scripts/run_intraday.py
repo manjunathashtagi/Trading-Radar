@@ -1,70 +1,85 @@
-import sys, os
-sys.path.insert(0, os.path.abspath(""))
-
+import sys
+import os
 import pandas as pd
 from datetime import datetime
-from alerts.telegram_alerts import send_alert
-from data_feed.nse_fetcher import fetch_nse_ohlc
-from data_feed.nse_universe import get_all_nse_symbols
-from data_feed.stage1_filter import stage1_shortlist
-from analytics.sector_strength import sector_strength
+
+# Ensure project root in path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from scanners.intraday_scanner import scan_intraday
-from analytics.trade_tracker import check_trade
+from alerts.telegram_alerts import send_alert
 
-os.makedirs("data", exist_ok=True)
+CACHE_FILE = "data/stage1_cache.csv"
+ALERT_LOG_FILE = "data/alerted_today.csv"
 
-try:
-    trades = pd.read_csv("data/signals.csv")
-except:
-    trades = pd.DataFrame(columns=["time","symbol","signal","price","sl","tp","status","confidence"])
 
-# ---- STAGE 1 ----
-universe = get_all_nse_symbols()
-stage1 = stage1_shortlist(universe)
-sectors = sector_strength(stage1)
+def load_stage1_watchlist():
+    if not os.path.exists(CACHE_FILE):
+        print("No Stage-1 cache found.")
+        return pd.DataFrame()
 
-send_alert(f"📡 Stage-1 ready | {len(stage1)} stocks")
+    df = pd.read_csv(CACHE_FILE)
 
-today = datetime.now().date()
-alerted = set(trades[pd.to_datetime(trades["time"]).dt.date == today]["symbol"])
+    # Ensure today's data only
+    today = datetime.now().date()
+    df = df[pd.to_datetime(df["date"]).dt.date == today]
 
-# ---- STAGE 2 ----
-for _, row in stage1.iterrows():
-    sym = row["symbol"]
-    if sym in alerted:
-        continue
+    return df
 
-    df = fetch_nse_ohlc(sym)
-    if df.empty:
-        continue
 
-    res = scan_intraday(df, sector_bonus=10)
-    if not res:
-        continue
+def load_alerted_symbols():
+    if os.path.exists(ALERT_LOG_FILE):
+        df = pd.read_csv(ALERT_LOG_FILE)
+        return set(df["symbol"])
+    return set()
 
-    side, price, atr, conf = res
-    sl = price - atr if side == "BUY" else price + atr
-    tp = price + 2*atr if side == "BUY" else price - 2*atr
 
-    send_alert(
-        f"🚨 <b>{side}</b> {sym}\n"
-        f"Price: {round(price,2)}\n"
-        f"Confidence: {conf}%\n"
-        f"SL: {round(sl,2)} | TP: {round(tp,2)}"
-    )
+def save_alerted_symbol(symbol):
+    df = pd.DataFrame([[symbol]], columns=["symbol"])
+    if os.path.exists(ALERT_LOG_FILE):
+        df.to_csv(ALERT_LOG_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(ALERT_LOG_FILE, index=False)
 
-    trades.loc[len(trades)] = [
-        datetime.now(), sym, side, price, sl, tp, "OPEN", conf
-    ]
 
-# ---- TRACK OPEN TRADES ----
-for i, r in trades[trades["status"]=="OPEN"].iterrows():
-    df = fetch_nse_ohlc(r["symbol"])
-    if df.empty:
-        continue
-    status = check_trade(r, df["close"].iloc[-1])
-    if status != "OPEN":
-        trades.at[i,"status"] = status
-        send_alert(f"📌 {r['symbol']} {status}")
+def main():
+    stage1_df = load_stage1_watchlist()
 
-trades.to_csv("data/signals.csv", index=False)
+    if stage1_df.empty:
+        print("Stage-1 list empty. Nothing to scan.")
+        return
+
+    send_alert(f"📡 Stage-1 ready | {len(stage1_df)} stocks")
+
+    alerted_symbols = load_alerted_symbols()
+
+    for _, row in stage1_df.iterrows():
+        symbol = row["symbol"]
+
+        if symbol in alerted_symbols:
+            continue  # Avoid repeat alerts same day
+
+        try:
+            signal = scan_intraday(symbol)
+
+            if signal and signal.get("action") in ["BUY", "SELL"]:
+                message = (
+                    f"🚨 <b>{signal['action']} SIGNAL</b>\n"
+                    f"Stock: {symbol}\n"
+                    f"Entry: {signal['entry']}\n"
+                    f"SL: {signal['sl']}\n"
+                    f"TP: {signal['tp']}\n"
+                    f"Confidence: {signal.get('confidence', 0)}%"
+                )
+
+                send_alert(message)
+                save_alerted_symbol(symbol)
+
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
+
+
+if __name__ == "__main__":
+    main()
