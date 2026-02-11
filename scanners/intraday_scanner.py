@@ -26,6 +26,7 @@ def scan_intraday(symbol):
         )
 
         if df is None or len(df) < 20:
+            print(f"{symbol}: Not enough data")
             return None
 
         df = df.tail(20)
@@ -33,40 +34,38 @@ def scan_intraday(symbol):
         prev = df.iloc[-2]
 
         close_now = last["CLOSE"]
-
         atr = calculate_atr(df)
 
         if np.isnan(atr) or atr == 0:
+            print(f"{symbol}: ATR invalid")
             return None
 
-        # --- Breakout Logic ---
-        if close_now > prev["HIGH"]:
+        # 🔥 Slightly relaxed breakout
+        if close_now >= prev["HIGH"] * 0.998:
             action = "BUY"
             entry = close_now
             sl = entry - atr
             tp = entry + (2 * atr)
 
-        elif close_now < prev["LOW"]:
+        elif close_now <= prev["LOW"] * 1.002:
             action = "SELL"
             entry = close_now
             sl = entry + atr
             tp = entry - (2 * atr)
 
         else:
+            print(f"{symbol}: No breakout")
             return None
 
-        # --- Risk Metrics ---
         risk_distance = abs(entry - sl)
         rr = abs(tp - entry) / risk_distance if risk_distance != 0 else 0
         sl_percent = (risk_distance / entry) * 100
 
-        # --- Gap + Sector Info ---
         quote = nse_eq(symbol)
         gap_percent = quote["priceInfo"]["pChange"]
         gap_direction = "Gap Up" if gap_percent > 0 else "Gap Down"
         sector = quote.get("industry", "Unknown")
 
-        # --- Dynamic Confidence ---
         confidence = 60
         if rr >= 2:
             confidence += 10
@@ -76,6 +75,8 @@ def scan_intraday(symbol):
             confidence += 10
 
         confidence = min(confidence, 95)
+
+        print(f"{symbol}: SIGNAL FOUND")
 
         return {
             "action": action,
@@ -90,5 +91,6 @@ def scan_intraday(symbol):
             "confidence": confidence
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"{symbol}: Error {e}")
         return None
