@@ -7,7 +7,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from scanners.intraday_scanner import scan_intraday
+from scanners.intraday_scanner import scan_bulk
 from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
@@ -17,8 +17,7 @@ READY_LOG_FILE = "data/stage1_ready_sent.txt"
 
 def load_stage1_watchlist():
     if not os.path.exists(CACHE_FILE):
-        print("No stage1 cache found.")
-        return pd.DataFrame()
+        return []
 
     df = pd.read_csv(CACHE_FILE)
     today = datetime.now().date()
@@ -26,7 +25,7 @@ def load_stage1_watchlist():
     if "date" in df.columns:
         df = df[pd.to_datetime(df["date"]).dt.date == today]
 
-    return df
+    return df["symbol"].tolist()
 
 
 def load_alerted_symbols():
@@ -57,46 +56,42 @@ def send_stage1_ready_once(count):
 
 
 def main():
-    stage1_df = load_stage1_watchlist()
+    stage1_symbols = load_stage1_watchlist()
 
-    if stage1_df.empty:
-        print("Stage-1 list empty.")
+    if not stage1_symbols:
+        print("No Stage-1 symbols found.")
         return
 
-    print(f"Scanning {len(stage1_df)} stocks...")
-    send_stage1_ready_once(len(stage1_df))
+    print(f"Bulk scanning {len(stage1_symbols)} stocks...")
+    send_stage1_ready_once(len(stage1_symbols))
 
     alerted_symbols = load_alerted_symbols()
-    signals_found = 0
 
-    for _, row in stage1_df.iterrows():
-        symbol = row["symbol"]
+    signals = scan_bulk(stage1_symbols)
+
+    print(f"Signals found: {len(signals)}")
+
+    for signal in signals:
+        symbol = signal["symbol"]
 
         if symbol in alerted_symbols:
             continue
 
-        signal = scan_intraday(symbol)
+        message = (
+            f"🚨 <b>{signal['action']} SIGNAL</b>\n\n"
+            f"Stock: <b>{symbol}</b>\n"
+            f"Sector: {signal['sector']}\n"
+            f"{signal['gap_tag']}: {signal['gap']}%\n\n"
+            f"Entry: {round(signal['entry'], 2)}\n"
+            f"SL: {round(signal['sl'], 2)} ({signal['sl_percent']}%)\n"
+            f"Target: {round(signal['tp'], 2)}\n"
+            f"RR: 1:{signal['rr']}\n"
+            f"Confidence: {signal['confidence']}%\n\n"
+            f"Time: {datetime.now().strftime('%H:%M')}"
+        )
 
-        if signal:
-            signals_found += 1
-
-            message = (
-                f"🚨 <b>{signal['action']} SIGNAL</b>\n\n"
-                f"Stock: <b>{symbol}</b>\n"
-                f"Sector: {signal['sector']}\n"
-                f"{signal['gap_tag']}: {signal['gap']}%\n\n"
-                f"Entry: {round(signal['entry'], 2)}\n"
-                f"SL: {round(signal['sl'], 2)} ({signal['sl_percent']}%)\n"
-                f"Target: {round(signal['tp'], 2)}\n"
-                f"RR: 1:{signal['rr']}\n"
-                f"Confidence: {signal['confidence']}%\n\n"
-                f"Time: {datetime.now().strftime('%H:%M')}"
-            )
-
-            send_alert(message)
-            save_alerted_symbol(symbol)
-
-    print(f"Scan complete. Signals found: {signals_found}")
+        send_alert(message)
+        save_alerted_symbol(symbol)
 
 
 if __name__ == "__main__":
