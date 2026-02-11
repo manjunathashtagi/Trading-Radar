@@ -4,7 +4,7 @@ from datetime import datetime
 
 CACHE = "data/stage1_cache.csv"
 
-def stage1_shortlist(universe=None, limit=150):
+def stage1_shortlist(universe=None, limit=120):
     today = datetime.now().date()
 
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
@@ -28,18 +28,17 @@ def stage1_shortlist(universe=None, limit=150):
 
     total_scanned = len(df)
 
-    # Remove invalid rows
+    # Clean data
     df = df[df["symbol"].notna()]
     df = df[df["lastPrice"].notna()]
     df = df[df["pChange"].notna()]
 
-    # 🔥 Apply your filters
+    # 🔥 NEW STRICT FILTER
     df_filtered = df[
-        (abs(df["pChange"]) >= 1.0) &
-        (df["lastPrice"] > 40)
+        (abs(df["pChange"]) >= 1.2) &
+        (df["lastPrice"] > 50)
     ]
 
-    # Rank by strongest gap
     df_filtered = df_filtered.sort_values(
         by="pChange",
         key=abs,
@@ -55,7 +54,7 @@ def stage1_shortlist(universe=None, limit=150):
     result.to_csv(CACHE, index=False)
 
     print(
-        f"[STAGE-1 GAP FILTERED] "
+        f"[STAGE-1 STRICT GAP] "
         f"Scanned: {total_scanned} | "
         f"Qualified: {len(result)} | "
         f"Date: {today}"
