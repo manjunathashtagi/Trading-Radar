@@ -1,96 +1,82 @@
 import pandas as pd
-from nsepython import equity_history, nse_eq
-from datetime import datetime, timedelta
-import numpy as np
+import requests
 
 
-def calculate_atr(df, period=14):
-    df["H-L"] = df["HIGH"] - df["LOW"]
-    df["H-PC"] = abs(df["HIGH"] - df["CLOSE"].shift(1))
-    df["L-PC"] = abs(df["LOW"] - df["CLOSE"].shift(1))
-    df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
-    atr = df["TR"].rolling(period).mean()
-    return atr.iloc[-1]
+def fetch_bulk_snapshot():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+    }
+
+    session = requests.Session()
+    session.get("https://www.nseindia.com", headers=headers, timeout=5)
+    response = session.get(url, headers=headers, timeout=10)
+
+    data = response.json()
+    df = pd.DataFrame(data["data"])
+
+    return df
 
 
-def scan_intraday(symbol):
+def scan_bulk(stage1_symbols):
     try:
-        to_d = datetime.now()
-        from_d = to_d - timedelta(days=20)
+        df = fetch_bulk_snapshot()
 
-        df = equity_history(
-            symbol,
-            "EQ",
-            from_d.strftime("%d-%m-%Y"),
-            to_d.strftime("%d-%m-%Y")
-        )
+        df = df[df["symbol"].isin(stage1_symbols)]
 
-        if df is None or len(df) < 20:
-            print(f"{symbol}: Not enough data")
-            return None
+        signals = []
 
-        df = df.tail(20)
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        for _, row in df.iterrows():
+            symbol = row["symbol"]
+            last_price = row["lastPrice"]
+            prev_close = row["previousClose"]
+            pchange = row["pChange"]
+            sector = row.get("industry", "Unknown")
 
-        close_now = last["CLOSE"]
-        atr = calculate_atr(df)
+            # Basic gap continuation logic
+            if pchange > 0 and last_price > prev_close:
+                action = "BUY"
+            elif pchange < 0 and last_price < prev_close:
+                action = "SELL"
+            else:
+                continue
 
-        if np.isnan(atr) or atr == 0:
-            print(f"{symbol}: ATR invalid")
-            return None
+            # Risk model (simple 1% stop)
+            sl_percent = 1.0
+            sl_distance = last_price * (sl_percent / 100)
 
-        # 🔥 Slightly relaxed breakout
-        if close_now >= prev["HIGH"] * 0.998:
-            action = "BUY"
-            entry = close_now
-            sl = entry - atr
-            tp = entry + (2 * atr)
+            if action == "BUY":
+                sl = last_price - sl_distance
+                tp = last_price + (2 * sl_distance)
+            else:
+                sl = last_price + sl_distance
+                tp = last_price - (2 * sl_distance)
 
-        elif close_now <= prev["LOW"] * 1.002:
-            action = "SELL"
-            entry = close_now
-            sl = entry + atr
-            tp = entry - (2 * atr)
+            rr = 2.0
+            gap_tag = "Gap Up" if pchange > 0 else "Gap Down"
 
-        else:
-            print(f"{symbol}: No breakout")
-            return None
+            confidence = 70
+            if abs(pchange) >= 2:
+                confidence += 10
 
-        risk_distance = abs(entry - sl)
-        rr = abs(tp - entry) / risk_distance if risk_distance != 0 else 0
-        sl_percent = (risk_distance / entry) * 100
+            signals.append({
+                "symbol": symbol,
+                "action": action,
+                "entry": last_price,
+                "sl": sl,
+                "tp": tp,
+                "rr": rr,
+                "sl_percent": sl_percent,
+                "gap": round(pchange, 2),
+                "gap_tag": gap_tag,
+                "sector": sector,
+                "confidence": confidence
+            })
 
-        quote = nse_eq(symbol)
-        gap_percent = quote["priceInfo"]["pChange"]
-        gap_direction = "Gap Up" if gap_percent > 0 else "Gap Down"
-        sector = quote.get("industry", "Unknown")
-
-        confidence = 60
-        if rr >= 2:
-            confidence += 10
-        if abs(gap_percent) >= 2:
-            confidence += 10
-        if sl_percent < 1:
-            confidence += 10
-
-        confidence = min(confidence, 95)
-
-        print(f"{symbol}: SIGNAL FOUND")
-
-        return {
-            "action": action,
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "rr": round(rr, 2),
-            "sl_percent": round(sl_percent, 2),
-            "gap": round(gap_percent, 2),
-            "gap_tag": gap_direction,
-            "sector": sector,
-            "confidence": confidence
-        }
+        return signals
 
     except Exception as e:
-        print(f"{symbol}: Error {e}")
-        return None
+        print("Bulk scan error:", e)
+        return []
