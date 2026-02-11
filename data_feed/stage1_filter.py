@@ -8,9 +8,8 @@ def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
 
     try:
-        # 🔥 Single bulk download (entire NSE)
-        df = nse_bhavcopy("equities", today.strftime("%d-%m-%Y"))
-
+        # Fetch full equity bhavcopy
+        df = nse_fno_bhavcopy("equity")
     except Exception as e:
         print("Bhavcopy fetch failed:", e)
         return pd.DataFrame(columns=["symbol", "score"])
@@ -21,7 +20,7 @@ def stage1_shortlist(universe, limit=120):
 
     total_scanned = len(df)
 
-    # Keep only EQ series
+    # Only EQ series
     df = df[df["SERIES"] == "EQ"]
 
     # Calculate % change
@@ -30,10 +29,9 @@ def stage1_shortlist(universe, limit=120):
         df["PREV_CLOSE"]
     ) * 100
 
-    # NSE-appropriate filter
+    # NSE realistic filter
     df_filtered = df[abs(df["pct_change"]) >= 0.8]
 
-    # Rank by magnitude
     df_filtered = df_filtered.sort_values(
         by="pct_change",
         key=abs,
