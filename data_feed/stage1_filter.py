@@ -1,5 +1,5 @@
 import pandas as pd
-from nsepython import nse_bhavcopy
+from nsepython import nse_fno_bhavcopy
 from datetime import datetime
 
 CACHE = "data/stage1_cache.csv"
