@@ -3,7 +3,6 @@ import os
 import pandas as pd
 from datetime import datetime
 
-# Ensure project root in path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -13,26 +12,25 @@ from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
+READY_LOG_FILE = "data/stage1_ready_sent.txt"
 
 
 def load_stage1_watchlist():
     if not os.path.exists(CACHE_FILE):
-        print("No Stage-1 cache found.")
         return pd.DataFrame()
 
     df = pd.read_csv(CACHE_FILE)
-
-    # Ensure today's data only
     today = datetime.now().date()
-    df = df[pd.to_datetime(df["date"]).dt.date == today]
+
+    if "date" in df.columns:
+        df = df[pd.to_datetime(df["date"]).dt.date == today]
 
     return df
 
 
 def load_alerted_symbols():
     if os.path.exists(ALERT_LOG_FILE):
-        df = pd.read_csv(ALERT_LOG_FILE)
-        return set(df["symbol"])
+        return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
     return set()
 
 
@@ -44,14 +42,25 @@ def save_alerted_symbol(symbol):
         df.to_csv(ALERT_LOG_FILE, index=False)
 
 
+def send_stage1_ready_once(count):
+    today = str(datetime.now().date())
+    if os.path.exists(READY_LOG_FILE):
+        with open(READY_LOG_FILE, "r") as f:
+            if f.read().strip() == today:
+                return
+
+    send_alert(f"📡 Stage-1 ready | {count} stocks")
+    with open(READY_LOG_FILE, "w") as f:
+        f.write(today)
+
+
 def main():
     stage1_df = load_stage1_watchlist()
 
     if stage1_df.empty:
-        print("Stage-1 list empty. Nothing to scan.")
         return
 
-    send_alert(f"📡 Stage-1 ready | {len(stage1_df)} stocks")
+    send_stage1_ready_once(len(stage1_df))
 
     alerted_symbols = load_alerted_symbols()
 
@@ -59,26 +68,27 @@ def main():
         symbol = row["symbol"]
 
         if symbol in alerted_symbols:
-            continue  # Avoid repeat alerts same day
+            continue
 
-        try:
-            signal = scan_intraday(symbol)
+        signal = scan_intraday(symbol)
 
-            if signal and signal.get("action") in ["BUY", "SELL"]:
-                message = (
-                    f"🚨 <b>{signal['action']} SIGNAL</b>\n"
-                    f"Stock: {symbol}\n"
-                    f"Entry: {signal['entry']}\n"
-                    f"SL: {signal['sl']}\n"
-                    f"TP: {signal['tp']}\n"
-                    f"Confidence: {signal.get('confidence', 0)}%"
-                )
+        if signal and signal["action"] in ["BUY", "SELL"]:
 
-                send_alert(message)
-                save_alerted_symbol(symbol)
+            message = (
+                f"🚨 <b>{signal['action']} SIGNAL</b>\n\n"
+                f"Stock: <b>{symbol}</b>\n"
+                f"Sector: {signal['sector']}\n"
+                f"{signal['gap_tag']}: {signal['gap']}%\n\n"
+                f"Entry: {round(signal['entry'], 2)}\n"
+                f"SL: {round(signal['sl'], 2)} ({signal['sl_percent']}%)\n"
+                f"Target: {round(signal['tp'], 2)}\n"
+                f"RR: 1:{signal['rr']}\n"
+                f"Confidence: {signal['confidence']}%\n\n"
+                f"Time: {datetime.now().strftime('%H:%M')}"
+            )
 
-        except Exception as e:
-            print(f"Error scanning {symbol}: {e}")
+            send_alert(message)
+            save_alerted_symbol(symbol)
 
 
 if __name__ == "__main__":
