@@ -69,29 +69,35 @@ def main():
 
     signals = scan_bulk(stage1_symbols)
 
-    print(f"Signals found: {len(signals)}")
+    # Remove already alerted stocks
+    new_signals = [s for s in signals if s["symbol"] not in alerted_symbols]
 
-    for signal in signals:
-        symbol = signal["symbol"]
+    if not new_signals:
+        print("No new signals.")
+        return
 
-        if symbol in alerted_symbols:
-            continue
+    # Save alerted symbols
+    for s in new_signals:
+        save_alerted_symbol(s["symbol"])
 
-        message = (
-            f"🚨 <b>{signal['action']} SIGNAL</b>\n\n"
-            f"Stock: <b>{symbol}</b>\n"
-            f"Sector: {signal['sector']}\n"
-            f"{signal['gap_tag']}: {signal['gap']}%\n\n"
-            f"Entry: {round(signal['entry'], 2)}\n"
-            f"SL: {round(signal['sl'], 2)} ({signal['sl_percent']}%)\n"
-            f"Target: {round(signal['tp'], 2)}\n"
-            f"RR: 1:{signal['rr']}\n"
-            f"Confidence: {signal['confidence']}%\n\n"
-            f"Time: {datetime.now().strftime('%H:%M')}"
+    # --- Combined Telegram Message ---
+    message = f"🚨 <b>INTRADAY SIGNALS ({len(new_signals)})</b>\n\n"
+
+    for s in new_signals:
+        message += (
+            f"<b>{s['action']} | {s['symbol']}</b>\n"
+            f"Sector: {s['sector']}\n"
+            f"{s['gap_tag']}: {s['gap']}%\n"
+            f"Entry: {round(s['entry'],2)} | "
+            f"SL: {round(s['sl'],2)} ({s['sl_percent']}%) | "
+            f"Target: {round(s['tp'],2)} | "
+            f"RR: 1:{s['rr']} | "
+            f"Conf: {s['confidence']}%\n\n"
         )
 
-        send_alert(message)
-        save_alerted_symbol(symbol)
+    message += f"Time: {datetime.now().strftime('%H:%M')}"
+
+    send_alert(message)
 
 
 if __name__ == "__main__":
