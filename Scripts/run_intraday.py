@@ -40,7 +40,7 @@ def save_alerted_symbol(symbol):
         df.to_csv(ALERT_LOG_FILE, mode="a", header=False, index=False)
     else:
         df.to_csv(ALERT_LOG_FILE, index=False)
-
+    print(f"Scanning {len(stage1_df)} stocks...")
 
 def send_stage1_ready_once(count):
     today = str(datetime.now().date())
