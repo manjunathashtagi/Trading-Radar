@@ -24,18 +24,20 @@ def scan_bulk(stage1_symbols):
     try:
         df = fetch_bulk_snapshot()
 
+        # Filter only Stage-1 shortlisted stocks
         df = df[df["symbol"].isin(stage1_symbols)]
 
         signals = []
 
         for _, row in df.iterrows():
+
             symbol = row["symbol"]
-            last_price = row["lastPrice"]
-            prev_close = row["previousClose"]
-            pchange = row["pChange"]
+            last_price = float(row["lastPrice"])
+            prev_close = float(row["previousClose"])
+            pchange = float(row["pChange"])
             sector = row.get("industry", "Unknown")
 
-            # Basic gap continuation logic
+            # --- Simple Gap Continuation Logic ---
             if pchange > 0 and last_price > prev_close:
                 action = "BUY"
             elif pchange < 0 and last_price < prev_close:
@@ -43,7 +45,7 @@ def scan_bulk(stage1_symbols):
             else:
                 continue
 
-            # Risk model (simple 1% stop)
+            # --- Risk Model (1% stop, 1:2 RR) ---
             sl_percent = 1.0
             sl_distance = last_price * (sl_percent / 100)
 
@@ -60,6 +62,8 @@ def scan_bulk(stage1_symbols):
             confidence = 70
             if abs(pchange) >= 2:
                 confidence += 10
+            if abs(pchange) >= 3:
+                confidence += 5
 
             signals.append({
                 "symbol": symbol,
@@ -72,7 +76,7 @@ def scan_bulk(stage1_symbols):
                 "gap": round(pchange, 2),
                 "gap_tag": gap_tag,
                 "sector": sector,
-                "confidence": confidence
+                "confidence": min(confidence, 95)
             })
 
         return signals
