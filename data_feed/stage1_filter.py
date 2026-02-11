@@ -1,61 +1,58 @@
 import pandas as pd
-from nsepython import nse_eq
+from nsepython import nse_bhavcopy
 from datetime import datetime
 
 CACHE = "data/stage1_cache.csv"
 
 def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
-    total_scanned = len(universe)
 
-    rows = []
+    try:
+        # 🔥 Single bulk download (entire NSE)
+        df = nse_bhavcopy("equities", today.strftime("%d-%m-%Y"))
 
-    for sym in universe["symbol"]:
-        try:
-            quote = nse_eq(sym)
+    except Exception as e:
+        print("Bhavcopy fetch failed:", e)
+        return pd.DataFrame(columns=["symbol", "score"])
 
-            last_price = quote.get("priceInfo", {}).get("lastPrice")
-            prev_close = quote.get("priceInfo", {}).get("previousClose")
+    if df is None or df.empty:
+        print("Empty bhavcopy.")
+        return pd.DataFrame(columns=["symbol", "score"])
 
-            if not last_price or not prev_close:
-                continue
+    total_scanned = len(df)
 
-            pct_change = ((last_price - prev_close) / prev_close) * 100
+    # Keep only EQ series
+    df = df[df["SERIES"] == "EQ"]
 
-            # NSE appropriate gap filter
-            if abs(pct_change) >= 0.8:
-                rows.append({
-                    "symbol": sym,
-                    "score": abs(pct_change)
-                })
+    # Calculate % change
+    df["pct_change"] = (
+        (df["CLOSE_PRICE"] - df["PREV_CLOSE"]) /
+        df["PREV_CLOSE"]
+    ) * 100
 
-        except Exception:
-            continue
+    # NSE-appropriate filter
+    df_filtered = df[abs(df["pct_change"]) >= 0.8]
 
-    if not rows:
-        df_empty = pd.DataFrame(columns=["symbol", "score"])
-        df_empty["date"] = today
-        df_empty.to_csv(CACHE, index=False)
+    # Rank by magnitude
+    df_filtered = df_filtered.sort_values(
+        by="pct_change",
+        key=abs,
+        ascending=False
+    ).head(limit)
 
-        print(
-            f"[STAGE-1 DONE] "
-            f"Scanned: {total_scanned} | "
-            f"Qualified: 0 | "
-            f"Date: {today}"
-        )
+    result = pd.DataFrame({
+        "symbol": df_filtered["SYMBOL"],
+        "score": abs(df_filtered["pct_change"]),
+        "date": today
+    })
 
-        return df_empty
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values("score", ascending=False).head(limit)
-    df["date"] = today
-    df.to_csv(CACHE, index=False)
+    result.to_csv(CACHE, index=False)
 
     print(
-        f"[STAGE-1 DONE] "
+        f"[STAGE-1 FAST] "
         f"Scanned: {total_scanned} | "
-        f"Qualified: {len(df)} | "
+        f"Qualified: {len(result)} | "
         f"Date: {today}"
     )
 
-    return df
+    return result
