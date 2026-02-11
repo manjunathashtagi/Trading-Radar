@@ -16,7 +16,7 @@ def stage1_shortlist(universe=None, limit=150):
 
     try:
         session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers)
+        session.get("https://www.nseindia.com", headers=headers, timeout=5)
         response = session.get(url, headers=headers, timeout=10)
         data = response.json()
 
@@ -28,29 +28,34 @@ def stage1_shortlist(universe=None, limit=150):
 
     total_scanned = len(df)
 
+    # Remove invalid rows
     df = df[df["symbol"].notna()]
+    df = df[df["lastPrice"].notna()]
+    df = df[df["pChange"].notna()]
 
-    df["pct_change"] = df["pChange"]
+    # 🔥 Apply your filters
+    df_filtered = df[
+        (abs(df["pChange"]) >= 1.0) &
+        (df["lastPrice"] > 40)
+    ]
 
-    # Gap filter
-    df_filtered = df[abs(df["pct_change"]) >= 0.8]
-
+    # Rank by strongest gap
     df_filtered = df_filtered.sort_values(
-        by="pct_change",
+        by="pChange",
         key=abs,
         ascending=False
     ).head(limit)
 
     result = pd.DataFrame({
         "symbol": df_filtered["symbol"],
-        "score": abs(df_filtered["pct_change"]),
+        "score": abs(df_filtered["pChange"]),
         "date": today
     })
 
     result.to_csv(CACHE, index=False)
 
     print(
-        f"[STAGE-1 GAP] "
+        f"[STAGE-1 GAP FILTERED] "
         f"Scanned: {total_scanned} | "
         f"Qualified: {len(result)} | "
         f"Date: {today}"
