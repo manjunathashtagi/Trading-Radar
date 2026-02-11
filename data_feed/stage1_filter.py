@@ -1,6 +1,6 @@
 import pandas as pd
-from nsepython import equity_history
-from datetime import datetime, timedelta
+from nsepython import nse_eq
+from datetime import datetime
 
 CACHE = "data/stage1_cache.csv"
 
@@ -8,45 +8,21 @@ def stage1_shortlist(universe, limit=120):
     today = datetime.now().date()
     total_scanned = len(universe)
 
-    # ---------- TRY CACHE FIRST ----------
-    try:
-        cache = pd.read_csv(CACHE, parse_dates=["date"])
-        if not cache.empty and cache["date"].iloc[0].date() == today:
-            print(
-                f"[STAGE-1 CACHE] "
-                f"Scanned: {total_scanned} | "
-                f"Qualified: {len(cache)} | "
-                f"Date: {today}"
-            )
-            return cache
-    except Exception:
-        pass
-
     rows = []
-    to_d = datetime.now()
-    from_d = to_d - timedelta(days=5)
 
     for sym in universe["symbol"]:
         try:
-            df = equity_history(
-                sym,
-                "EQ",
-                from_d.strftime("%d-%m-%Y"),
-                to_d.strftime("%d-%m-%Y")
-            )
+            quote = nse_eq(sym)
 
-            if df is None or len(df) < 2:
+            last_price = quote.get("priceInfo", {}).get("lastPrice")
+            prev_close = quote.get("priceInfo", {}).get("previousClose")
+
+            if not last_price or not prev_close:
                 continue
 
-            df = df.tail(2)
+            pct_change = ((last_price - prev_close) / prev_close) * 100
 
-            close_now = df.iloc[-1]["CLOSE"]
-            close_prev = df.iloc[-2]["CLOSE"]
-
-            pct_change = ((close_now - close_prev) / close_prev) * 100
-
-            # ✅ NSE-APPROPRIATE PRE-MARKET FILTER
-            # No volume filter (NSE pre-open volume is meaningless)
+            # NSE appropriate gap filter
             if abs(pct_change) >= 0.8:
                 rows.append({
                     "symbol": sym,
@@ -56,7 +32,6 @@ def stage1_shortlist(universe, limit=120):
         except Exception:
             continue
 
-    # ---------- SAFE EMPTY HANDLING ----------
     if not rows:
         df_empty = pd.DataFrame(columns=["symbol", "score"])
         df_empty["date"] = today
