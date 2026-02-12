@@ -1,3 +1,4 @@
+import sys
 import os
 import pandas as pd
 import requests
@@ -9,8 +10,10 @@ from alerts.telegram_alerts import send_alert
 SIGNALS_FILE = "data/signals.csv"
 
 
-def fetch_bulk_snapshot():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
+# --------------------------------------------
+# Fetch 5-min intraday data from NSE
+# --------------------------------------------
+def fetch_intraday_data(symbol):
 
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -21,13 +24,32 @@ def fetch_bulk_snapshot():
     session.get("https://www.nseindia.com", headers=headers, timeout=20)
     time.sleep(1)
 
-    response = session.get(url, headers=headers, timeout=20)
-    response.raise_for_status()
+    # NSE chart API
+    url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}"
 
-    data = response.json()
-    return pd.DataFrame(data["data"])
+    try:
+        response = session.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+
+        if "grapthData" not in data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data["grapthData"], columns=["timestamp", "price"])
+
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["price"] = df["price"].astype(float)
+
+        return df
+
+    except Exception as e:
+        print(f"Intraday fetch failed for {symbol}: {e}")
+        return pd.DataFrame()
 
 
+# --------------------------------------------
+# MAIN
+# --------------------------------------------
 def main():
 
     if not os.path.exists(SIGNALS_FILE):
@@ -35,6 +57,10 @@ def main():
         return
 
     signals_df = pd.read_csv(SIGNALS_FILE)
+
+    if signals_df.empty:
+        send_alert("📊 EOD REPORT\nNo trades generated today.")
+        return
 
     ist = pytz.timezone("Asia/Kolkata")
     today = datetime.now(ist).date()
@@ -46,8 +72,6 @@ def main():
         send_alert("📊 EOD REPORT\nNo trades generated today.")
         return
 
-    market_df = fetch_bulk_snapshot()
-
     message = f"📊 <b>EOD PERFORMANCE REPORT</b>\n\n"
 
     for idx, signal in today_df.iterrows():
@@ -57,34 +81,49 @@ def main():
         entry = float(signal["entry"])
         sl = float(signal["sl"])
         tp = float(signal["tp"])
+        trigger_time = signal["trigger_time"]
 
-        stock = market_df[market_df["symbol"] == symbol]
-        if stock.empty:
+        intraday_df = fetch_intraday_data(symbol)
+
+        if intraday_df.empty:
             continue
 
-        day_high = float(stock.iloc[0]["dayHigh"])
-        day_low = float(stock.iloc[0]["dayLow"])
+        # Filter candles AFTER trigger time
+        trigger_datetime = datetime.combine(
+            today,
+            datetime.strptime(trigger_time, "%H:%M:%S").time()
+        )
+
+        intraday_df = intraday_df[intraday_df["timestamp"] >= trigger_datetime]
 
         result = "⏳ STILL OPEN"
 
-        if action == "BUY":
-            if day_high >= tp:
-                result = "🎯 TARGET HIT"
-            elif day_low <= sl:
-                result = "❌ SL HIT"
+        for _, row in intraday_df.iterrows():
 
-        elif action == "SELL":
-            if day_low <= tp:
-                result = "🎯 TARGET HIT"
-            elif day_high >= sl:
-                result = "❌ SL HIT"
+            price = row["price"]
+
+            if action == "BUY":
+                if price >= tp:
+                    result = "🎯 TARGET HIT"
+                    break
+                if price <= sl:
+                    result = "❌ SL HIT"
+                    break
+
+            elif action == "SELL":
+                if price <= tp:
+                    result = "🎯 TARGET HIT"
+                    break
+                if price >= sl:
+                    result = "❌ SL HIT"
+                    break
 
         signals_df.loc[idx, "result"] = result
 
         message += (
             f"{'🟢' if action == 'BUY' else '🔴'} {symbol}\n"
             f"Entry: {entry} | SL: {sl} | Target: {tp}\n"
-            f"High: {day_high} | Low: {day_low}\n"
+            f"Triggered: {trigger_time}\n"
             f"Result: {result}\n\n"
         )
 
