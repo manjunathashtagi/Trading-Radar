@@ -1,23 +1,41 @@
-import pandas as pd
+import time
 import requests
+import pandas as pd
 
 
 def fetch_bulk_snapshot():
+
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
 
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive"
     }
 
     session = requests.Session()
-    session.get("https://www.nseindia.com", headers=headers, timeout=5)
-    response = session.get(url, headers=headers, timeout=10)
 
-    data = response.json()
-    df = pd.DataFrame(data["data"])
+    # Warm up session
+    session.get("https://www.nseindia.com", headers=headers, timeout=20)
+    time.sleep(1)
 
-    return df
+    # Retry mechanism
+    for attempt in range(3):
+        try:
+            response = session.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
+
+            data = response.json()
+            df = pd.DataFrame(data["data"])
+            return df
+
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed: {e}")
+            time.sleep(2)
+
+    print("Bulk quote fetch failed after retries.")
+    return pd.DataFrame()
 
 
 def scan_bulk(stage1_symbols):
