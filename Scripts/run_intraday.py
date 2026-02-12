@@ -13,6 +13,7 @@ from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
+SIGNALS_FILE = "data/signals.csv"
 
 
 def load_stage1_watchlist():
@@ -20,11 +21,6 @@ def load_stage1_watchlist():
         return []
 
     df = pd.read_csv(CACHE_FILE)
-    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-
-    if "date" in df.columns:
-        df = df[pd.to_datetime(df["date"]).dt.date == today]
-
     return df["symbol"].tolist()
 
 
@@ -42,6 +38,22 @@ def save_alerted_symbol(symbol):
         df.to_csv(ALERT_LOG_FILE, index=False)
 
 
+def save_signals(signals):
+    os.makedirs("data", exist_ok=True)
+
+    ist = pytz.timezone("Asia/Kolkata")
+    today = datetime.now(ist).date()
+
+    df = pd.DataFrame(signals)
+    df["date"] = today
+    df["result"] = ""  # empty until EOD evaluation
+
+    if os.path.exists(SIGNALS_FILE):
+        df.to_csv(SIGNALS_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(SIGNALS_FILE, index=False)
+
+
 def main():
 
     ist = pytz.timezone("Asia/Kolkata")
@@ -51,6 +63,7 @@ def main():
 
     if not stage1_symbols:
         print("No Stage-1 symbols found.")
+        send_alert("📡 Stage-1 ready | 0 stocks")
         return
 
     print(f"Bulk scanning {len(stage1_symbols)} stocks...")
@@ -63,11 +76,15 @@ def main():
 
     if not new_signals:
         print("No new signals.")
+        send_alert("📡 Intraday Scan | No new signals")
         return
 
     # Save alerted
     for s in new_signals:
         save_alerted_symbol(s["symbol"])
+
+    # Save signals for EOD
+    save_signals(new_signals)
 
     # Sort by confidence
     new_signals = sorted(new_signals, key=lambda x: x["confidence"], reverse=True)
@@ -75,35 +92,31 @@ def main():
     buy_signals = [s for s in new_signals if s["action"] == "BUY"][:5]
     sell_signals = [s for s in new_signals if s["action"] == "SELL"][:5]
 
-    # -------- BUY MESSAGE --------
+    # BUY MESSAGE
     if buy_signals:
-        buy_message = f"🟢 <b>BUY SIGNALS</b> | {current_time}\n\n"
+        message = f"🟢 <b>BUY SIGNALS</b> | {current_time}\n\n"
         for s in buy_signals:
-            buy_message += (
+            message += (
                 f"<b>{s['symbol']}</b>\n"
                 f"Entry: {round(s['entry'],2)} | "
                 f"SL: {round(s['sl'],2)} | "
                 f"Target: {round(s['tp'],2)} | "
-                f"RR 1:{s['rr']}\n"
-                f"{s['gap_tag']}: {s['gap']}% | "
                 f"Conf {s['confidence']}%\n\n"
             )
-        send_alert(buy_message)
+        send_alert(message)
 
-    # -------- SELL MESSAGE --------
+    # SELL MESSAGE
     if sell_signals:
-        sell_message = f"🔴 <b>SELL SIGNALS</b> | {current_time}\n\n"
+        message = f"🔴 <b>SELL SIGNALS</b> | {current_time}\n\n"
         for s in sell_signals:
-            sell_message += (
+            message += (
                 f"<b>{s['symbol']}</b>\n"
                 f"Entry: {round(s['entry'],2)} | "
                 f"SL: {round(s['sl'],2)} | "
                 f"Target: {round(s['tp'],2)} | "
-                f"RR 1:{s['rr']}\n"
-                f"{s['gap_tag']}: {s['gap']}% | "
                 f"Conf {s['confidence']}%\n\n"
             )
-        send_alert(sell_message)
+        send_alert(message)
 
 
 if __name__ == "__main__":
