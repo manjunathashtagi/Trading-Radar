@@ -39,18 +39,36 @@ def save_alerted_symbol(symbol):
 
 
 def save_signals(signals):
+
     os.makedirs("data", exist_ok=True)
 
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
 
     df = pd.DataFrame(signals)
+
     df["date"] = now.date()
     df["trigger_time"] = now.strftime("%H:%M:%S")
     df["result"] = ""
 
+    # Define strict column order
+    columns = [
+        "symbol",
+        "action",
+        "entry",
+        "sl",
+        "tp",
+        "date",
+        "trigger_time",
+        "result"
+    ]
+
+    df = df[columns]
+
     if os.path.exists(SIGNALS_FILE):
-        df.to_csv(SIGNALS_FILE, mode="a", header=False, index=False)
+        existing = pd.read_csv(SIGNALS_FILE)
+        combined = pd.concat([existing, df], ignore_index=True)
+        combined.to_csv(SIGNALS_FILE, index=False)
     else:
         df.to_csv(SIGNALS_FILE, index=False)
 
