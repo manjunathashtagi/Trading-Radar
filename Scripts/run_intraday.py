@@ -12,7 +12,6 @@ from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
-READY_LOG_FILE = "data/stage1_ready_sent.txt"
 
 
 # ----------------------------
@@ -49,22 +48,6 @@ def save_alerted_symbol(symbol):
 
 
 # ----------------------------
-# Send Stage-1 Ready Once
-# ----------------------------
-def send_stage1_ready_once(count):
-    today = str(datetime.now().date())
-
-    if os.path.exists(READY_LOG_FILE):
-        with open(READY_LOG_FILE, "r") as f:
-            if f.read().strip() == today:
-                return
-
-    send_alert(f"📡 Stage-1 ready | {count} stocks")
-    with open(READY_LOG_FILE, "w") as f:
-        f.write(today)
-
-
-# ----------------------------
 # MAIN
 # ----------------------------
 def main():
@@ -76,7 +59,6 @@ def main():
         return
 
     print(f"Bulk scanning {len(stage1_symbols)} stocks...")
-    send_stage1_ready_once(len(stage1_symbols))
 
     alerted_symbols = load_alerted_symbols()
 
@@ -93,46 +75,36 @@ def main():
     for s in new_signals:
         save_alerted_symbol(s["symbol"])
 
-    # Sort by highest confidence first
+    # Sort by confidence
     new_signals = sorted(new_signals, key=lambda x: x["confidence"], reverse=True)
 
-    # Separate BUY and SELL
     buy_signals = [s for s in new_signals if s["action"] == "BUY"]
     sell_signals = [s for s in new_signals if s["action"] == "SELL"]
 
-    # ----------------------------
-    # Build Telegram Message
-    # ----------------------------
     message = f"🚨 <b>INTRADAY SIGNALS</b> | {datetime.now().strftime('%H:%M')}\n\n"
 
-    # BUY SECTION
     if buy_signals:
         message += f"🟢 <b>BUY SIGNALS ({len(buy_signals)})</b>\n\n"
         for s in buy_signals:
             message += (
                 f"<b>{s['symbol']}</b>\n"
-                f"Sector: {s['sector']}\n"
-                f"{s['gap_tag']}: {s['gap']}%\n"
                 f"Entry: {round(s['entry'],2)} | "
-                f"SL: {round(s['sl'],2)} ({s['sl_percent']}%) | "
-                f"TP: {round(s['tp'],2)} | "
-                f"RR 1:{s['rr']} | "
-                f"Conf {s['confidence']}%\n\n"
+                f"SL: {round(s['sl'],2)} | "
+                f"Target: {round(s['tp'],2)} | "
+                f"RR 1:{s['rr']}\n"
+                f"{s['gap_tag']}: {s['gap']}%\n\n"
             )
 
-    # SELL SECTION
     if sell_signals:
         message += f"🔴 <b>SELL SIGNALS ({len(sell_signals)})</b>\n\n"
         for s in sell_signals:
             message += (
                 f"<b>{s['symbol']}</b>\n"
-                f"Sector: {s['sector']}\n"
-                f"{s['gap_tag']}: {s['gap']}%\n"
                 f"Entry: {round(s['entry'],2)} | "
-                f"SL: {round(s['sl'],2)} ({s['sl_percent']}%) | "
-                f"TP: {round(s['tp'],2)} | "
-                f"RR 1:{s['rr']} | "
-                f"Conf {s['confidence']}%\n\n"
+                f"SL: {round(s['sl'],2)} | "
+                f"Target: {round(s['tp'],2)} | "
+                f"RR 1:{s['rr']}\n"
+                f"{s['gap_tag']}: {s['gap']}%\n\n"
             )
 
     send_alert(message)
