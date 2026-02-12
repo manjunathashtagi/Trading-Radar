@@ -4,7 +4,6 @@ import time
 
 
 def fetch_bulk_snapshot():
-
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
 
     headers = {
@@ -14,25 +13,32 @@ def fetch_bulk_snapshot():
 
     session = requests.Session()
 
-    # Warmup
+    # Warmup request
     session.get("https://www.nseindia.com", headers=headers, timeout=20)
     time.sleep(1)
 
-    response = session.get(url, headers=headers, timeout=20)
-    response.raise_for_status()
+    for attempt in range(3):
+        try:
+            response = session.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            df = pd.DataFrame(data["data"])
+            return df
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed: {e}")
+            time.sleep(2)
 
-    data = response.json()
-    df = pd.DataFrame(data["data"])
-
-    return df
+    print("Bulk quote fetch failed.")
+    return pd.DataFrame()
 
 
 def scan_bulk(stage1_symbols):
-
     try:
         df = fetch_bulk_snapshot()
 
-        # Filter only stage1 symbols
+        if df.empty:
+            return []
+
         df = df[df["symbol"].isin(stage1_symbols)]
 
         signals = []
@@ -48,26 +54,13 @@ def scan_bulk(stage1_symbols):
             volume = float(row.get("totalTradedVolume", 0))
             sector = row.get("industry", "Unknown")
 
-            # ---------------------------
-            # STRONG CONTINUATION LOGIC
-            # ---------------------------
-
-            # Gap Up Continuation BUY
+            # Strong continuation logic
             if pchange >= 1.2 and last_price >= high * 0.995:
-
                 action = "BUY"
-
-            # Gap Down Continuation SELL
             elif pchange <= -1.2 and last_price <= low * 1.005:
-
                 action = "SELL"
-
             else:
                 continue
-
-            # ---------------------------
-            # Risk Model (1% SL, 1:2 RR)
-            # ---------------------------
 
             sl_percent = 1.0
             sl_distance = last_price * (sl_percent / 100)
@@ -79,12 +72,9 @@ def scan_bulk(stage1_symbols):
                 sl = last_price + sl_distance
                 tp = last_price - (2 * sl_distance)
 
-            # Confidence score
             confidence = 70
-
             if abs(pchange) >= 2:
                 confidence += 10
-
             if volume > 500000:
                 confidence += 5
 
@@ -102,7 +92,6 @@ def scan_bulk(stage1_symbols):
                 "confidence": min(confidence, 95)
             })
 
-        print(f"Signals found: {len(signals)}")
         return signals
 
     except Exception as e:
