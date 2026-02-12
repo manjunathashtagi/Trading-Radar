@@ -1,6 +1,6 @@
-import time
-import requests
 import pandas as pd
+import requests
+import time
 
 
 def fetch_bulk_snapshot():
@@ -8,41 +8,31 @@ def fetch_bulk_snapshot():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20TOTAL%20MARKET"
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive"
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
     }
 
     session = requests.Session()
 
-    # Warm up session
+    # Warmup
     session.get("https://www.nseindia.com", headers=headers, timeout=20)
     time.sleep(1)
 
-    # Retry mechanism
-    for attempt in range(3):
-        try:
-            response = session.get(url, headers=headers, timeout=20)
-            response.raise_for_status()
+    response = session.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
 
-            data = response.json()
-            df = pd.DataFrame(data["data"])
-            return df
+    data = response.json()
+    df = pd.DataFrame(data["data"])
 
-        except Exception as e:
-            print(f"Attempt {attempt+1} failed: {e}")
-            time.sleep(2)
-
-    print("Bulk quote fetch failed after retries.")
-    return pd.DataFrame()
+    return df
 
 
 def scan_bulk(stage1_symbols):
+
     try:
         df = fetch_bulk_snapshot()
 
-        # Filter only Stage-1 shortlisted stocks
+        # Filter only stage1 symbols
         df = df[df["symbol"].isin(stage1_symbols)]
 
         signals = []
@@ -53,17 +43,32 @@ def scan_bulk(stage1_symbols):
             last_price = float(row["lastPrice"])
             prev_close = float(row["previousClose"])
             pchange = float(row["pChange"])
+            high = float(row["dayHigh"])
+            low = float(row["dayLow"])
+            volume = float(row.get("totalTradedVolume", 0))
             sector = row.get("industry", "Unknown")
 
-            # --- Simple Gap Continuation Logic ---
-            if pchange > 0 and last_price > prev_close:
+            # ---------------------------
+            # STRONG CONTINUATION LOGIC
+            # ---------------------------
+
+            # Gap Up Continuation BUY
+            if pchange >= 1.2 and last_price >= high * 0.995:
+
                 action = "BUY"
-            elif pchange < 0 and last_price < prev_close:
+
+            # Gap Down Continuation SELL
+            elif pchange <= -1.2 and last_price <= low * 1.005:
+
                 action = "SELL"
+
             else:
                 continue
 
-            # --- Risk Model (1% stop, 1:2 RR) ---
+            # ---------------------------
+            # Risk Model (1% SL, 1:2 RR)
+            # ---------------------------
+
             sl_percent = 1.0
             sl_distance = last_price * (sl_percent / 100)
 
@@ -74,13 +79,13 @@ def scan_bulk(stage1_symbols):
                 sl = last_price + sl_distance
                 tp = last_price - (2 * sl_distance)
 
-            rr = 2.0
-            gap_tag = "Gap Up" if pchange > 0 else "Gap Down"
-
+            # Confidence score
             confidence = 70
+
             if abs(pchange) >= 2:
                 confidence += 10
-            if abs(pchange) >= 3:
+
+            if volume > 500000:
                 confidence += 5
 
             signals.append({
@@ -89,14 +94,15 @@ def scan_bulk(stage1_symbols):
                 "entry": last_price,
                 "sl": sl,
                 "tp": tp,
-                "rr": rr,
+                "rr": 2,
                 "sl_percent": sl_percent,
                 "gap": round(pchange, 2),
-                "gap_tag": gap_tag,
+                "gap_tag": "Gap Up" if pchange > 0 else "Gap Down",
                 "sector": sector,
                 "confidence": min(confidence, 95)
             })
 
+        print(f"Signals found: {len(signals)}")
         return signals
 
     except Exception as e:
