@@ -42,11 +42,12 @@ def save_signals(signals):
     os.makedirs("data", exist_ok=True)
 
     ist = pytz.timezone("Asia/Kolkata")
-    today = datetime.now(ist).date()
+    now = datetime.now(ist)
 
     df = pd.DataFrame(signals)
-    df["date"] = today
-    df["result"] = ""  # empty until EOD evaluation
+    df["date"] = now.date()
+    df["trigger_time"] = now.strftime("%H:%M:%S")
+    df["result"] = ""
 
     if os.path.exists(SIGNALS_FILE):
         df.to_csv(SIGNALS_FILE, mode="a", header=False, index=False)
