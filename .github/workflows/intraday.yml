@@ -28,10 +28,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python Scripts/run_intraday.py
-      - name: Commit signals file
+      - name: Commit intraday data
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/signals.csv || true
-          git commit -m "Auto: update signals file" || echo "No changes"
+          git add data/price_log.csv || true
+          git add data/alerted_today.csv || true
+          git commit -m "Auto: update intraday data" || echo "No changes"
           git push
