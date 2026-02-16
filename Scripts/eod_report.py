@@ -1,7 +1,6 @@
 import sys
 import os
 import pandas as pd
-import requests
 from datetime import datetime
 import pytz
 
@@ -11,225 +10,120 @@ if PROJECT_ROOT not in sys.path:
 
 from alerts.telegram_alerts import send_alert
 
-CACHE_FILE = "data/stage1_cache.csv"
-ALERT_LOG_FILE = "data/alerted_today.csv"
 SIGNALS_FILE = "data/signals.csv"
 PRICE_LOG_FILE = "data/price_log.csv"
 
 
-# ---------------------------------------------------
-# Fetch LTP from NSE
-# ---------------------------------------------------
-def fetch_ltp(symbol):
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
-
-    try:
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-
-        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        r = session.get(url, headers=headers, timeout=10)
-
-        data = r.json()
-        return float(data["priceInfo"]["lastPrice"])
-
-    except:
-        return None
-
-
-# ---------------------------------------------------
-# Load Stage-1 Watchlist
-# ---------------------------------------------------
-def load_stage1_watchlist():
-
-    if not os.path.exists(CACHE_FILE):
-        return []
-
-    df = pd.read_csv(CACHE_FILE)
-    return df["symbol"].tolist()
-
-
-# ---------------------------------------------------
-# Price Logging
-# ---------------------------------------------------
-def log_prices(symbol_prices):
-
-    os.makedirs("data", exist_ok=True)
-
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-
-    rows = []
-
-    for symbol, price in symbol_prices.items():
-        rows.append({
-            "symbol": symbol,
-            "date": now.date(),
-            "time": now.strftime("%H:%M:%S"),
-            "price": price
-        })
-
-    df = pd.DataFrame(rows)
-
-    if os.path.exists(PRICE_LOG_FILE):
-        df.to_csv(PRICE_LOG_FILE, mode="a", header=False, index=False)
-    else:
-        df.to_csv(PRICE_LOG_FILE, index=False)
-
-
-# ---------------------------------------------------
-# Prevent Duplicate Alerts
-# ---------------------------------------------------
-def load_alerted_symbols():
-    if os.path.exists(ALERT_LOG_FILE):
-        return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
-    return set()
-
-
-def save_alerted_symbol(symbol):
-    df = pd.DataFrame([[symbol]], columns=["symbol"])
-    if os.path.exists(ALERT_LOG_FILE):
-        df.to_csv(ALERT_LOG_FILE, mode="a", header=False, index=False)
-    else:
-        df.to_csv(ALERT_LOG_FILE, index=False)
-
-
-# ---------------------------------------------------
-# Save Signals
-# ---------------------------------------------------
-def save_signals(signals):
-
-    os.makedirs("data", exist_ok=True)
-
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-
-    df = pd.DataFrame(signals)
-
-    df["date"] = now.date()
-    df["trigger_time"] = now.strftime("%H:%M:%S")
-    df["result"] = ""
-
-    columns = [
-        "symbol",
-        "action",
-        "entry",
-        "sl",
-        "tp",
-        "date",
-        "trigger_time",
-        "result"
-    ]
-
-    df = df[columns]
-
-    if os.path.exists(SIGNALS_FILE):
-        existing = pd.read_csv(SIGNALS_FILE)
-        combined = pd.concat([existing, df], ignore_index=True)
-        combined.to_csv(SIGNALS_FILE, index=False)
-    else:
-        df.to_csv(SIGNALS_FILE, index=False)
-
-
-# ---------------------------------------------------
-# Simple Signal Logic (RR 1:2)
-# ---------------------------------------------------
-def generate_signal(symbol, price):
-
-    # Example: Momentum breakout logic
-    # You can replace with your GENZ logic
-
-    risk_percent = 1.0
-
-    # Example random condition placeholder
-    # Replace with your real signal conditions
-
-    if price > 0:
-
-        entry = price
-        sl = round(price * (1 - risk_percent / 100), 2)
-        tp = round(price + (price - sl) * 2, 2)
-
-        return {
-            "symbol": symbol,
-            "action": "BUY",
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "confidence": 80
-        }
-
-    return None
-
-
-# ---------------------------------------------------
-# MAIN
-# ---------------------------------------------------
 def main():
 
+    if not os.path.exists(SIGNALS_FILE):
+        send_alert("📊 EOD REPORT\nNo signals file found.")
+        return
+
+    if not os.path.exists(PRICE_LOG_FILE):
+        send_alert("📊 EOD REPORT\nNo price log found.")
+        return
+
+    signals_df = pd.read_csv(SIGNALS_FILE)
+    price_df = pd.read_csv(PRICE_LOG_FILE)
+
+    if signals_df.empty:
+        send_alert("📊 EOD REPORT\nNo trades generated today.")
+        return
+
     ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-    current_time = now.strftime("%H:%M")
+    today = datetime.now(ist).date()
 
-    # Run only during market hours
-    if not ("09:15" <= current_time <= "15:30"):
-        print("Outside market hours.")
+    signals_df["date"] = pd.to_datetime(signals_df["date"]).dt.date
+    today_df = signals_df[signals_df["date"] == today]
+
+    if today_df.empty:
+        send_alert("📊 EOD REPORT\nNo trades generated today.")
         return
 
-    stage1_symbols = load_stage1_watchlist()
+    message = f"📊 <b>EOD PERFORMANCE REPORT</b>\n"
+    message += f"Date: {today}\n\n"
 
-    if not stage1_symbols:
-        print("No Stage-1 symbols.")
-        return
+    total = 0
+    wins = 0
+    losses = 0
+    open_trades = 0
 
-    print(f"Scanning {len(stage1_symbols)} stocks...")
+    for idx, signal in today_df.iterrows():
 
-    symbol_prices = {}
-    signals = []
+        symbol = signal["symbol"]
+        action = signal["action"]
+        entry = float(signal["entry"])
+        sl = float(signal["sl"])
+        tp = float(signal["tp"])
+        trigger_time = signal["trigger_time"]
 
-    alerted_symbols = load_alerted_symbols()
-
-    for symbol in stage1_symbols:
-
-        price = fetch_ltp(symbol)
-
-        if price is None:
-            continue
-
-        symbol_prices[symbol] = price
-
-        signal = generate_signal(symbol, price)
-
-        if signal and symbol not in alerted_symbols:
-            signals.append(signal)
-            save_alerted_symbol(symbol)
-
-    # Log prices every run
-    if symbol_prices:
-        log_prices(symbol_prices)
-
-    if not signals:
-        print("No new signals.")
-        return
-
-    # Sort by confidence
-    signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
-
-    save_signals(signals)
-
-    # Telegram Message
-    message = f"🚨 <b>INTRADAY SIGNALS</b> | {current_time}\n\n"
-
-    for s in signals[:10]:  # limit to top 10
-        message += (
-            f"{'🟢' if s['action']=='BUY' else '🔴'} {s['symbol']}\n"
-            f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
-            f"Conf: {s['confidence']}%\n\n"
+        trigger_dt = datetime.combine(
+            today,
+            datetime.strptime(trigger_time, "%H:%M:%S").time()
         )
+
+        symbol_prices = price_df[
+            (price_df["symbol"] == symbol)
+        ].copy()
+
+        symbol_prices["datetime"] = pd.to_datetime(
+            symbol_prices["date"] + " " + symbol_prices["time"]
+        )
+
+        symbol_prices = symbol_prices[
+            symbol_prices["datetime"] >= trigger_dt
+        ]
+
+        result = "⏳ OPEN"
+
+        for _, row in symbol_prices.iterrows():
+            price = float(row["price"])
+
+            if action == "BUY":
+                if price >= tp:
+                    result = "🎯 TARGET HIT"
+                    wins += 1
+                    break
+                if price <= sl:
+                    result = "❌ SL HIT"
+                    losses += 1
+                    break
+
+            if action == "SELL":
+                if price <= tp:
+                    result = "🎯 TARGET HIT"
+                    wins += 1
+                    break
+                if price >= sl:
+                    result = "❌ SL HIT"
+                    losses += 1
+                    break
+
+        if result == "⏳ OPEN":
+            open_trades += 1
+
+        signals_df.loc[idx, "result"] = result
+
+        message += (
+            f"{'🟢' if action=='BUY' else '🔴'} {symbol}\n"
+            f"Entry: {entry} | SL: {sl} | Target: {tp}\n"
+            f"Triggered: {trigger_time}\n"
+            f"Result: {result}\n\n"
+        )
+
+        total += 1
+
+    signals_df.to_csv(SIGNALS_FILE, index=False)
+
+    win_rate = round((wins / total) * 100, 2) if total > 0 else 0
+
+    message += "-----------------------------\n"
+    message += f"Total: {total}\n"
+    message += f"🎯 Wins: {wins}\n"
+    message += f"❌ Loss: {losses}\n"
+    message += f"⏳ Open: {open_trades}\n"
+    message += f"Win Rate: {win_rate}%"
 
     send_alert(message)
 
