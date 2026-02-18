@@ -97,8 +97,12 @@ def log_price(symbol, price):
 def analyze_symbol(symbol):
 
     try:
-        ticker = yf.Ticker(symbol + ".NS")
-        df = ticker.history(period="5d", interval="15m")
+        df = yf.download(
+            symbol + ".NS",
+            period="5d",
+            interval="15m",
+            progress=False
+        )
 
         if len(df) < 50:
             return None
@@ -107,28 +111,27 @@ def analyze_symbol(symbol):
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
 
-        df["HH20"] = df["High"].rolling(20).max()
-        df["LL20"] = df["Low"].rolling(20).min()
-        df["VOL_AVG"] = df["Volume"].rolling(20).mean()
+        df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+
+        recent_high = df["High"].rolling(20).max().iloc[-2]
+        recent_low = df["Low"].rolling(20).min().iloc[-2]
+        volume_avg = df["Volume"].rolling(20).mean().iloc[-2]
 
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
         entry = latest["Close"]
-        volume_spike = latest["Volume"] > 1.5 * latest["VOL_AVG"]
 
-        # BUY Conditions
+        volume_spike = latest["Volume"] > 1.5 * volume_avg
+
+        # BUY
         if (
             latest["EMA20"] > latest["EMA50"] and
-            entry > latest["EMA20"] and
+            entry > recent_high and
             latest["RSI"] > 55 and
-            entry > prev["HH20"] and
             volume_spike
         ):
 
-            sl = df["Low"].rolling(5).min().iloc[-1]
-            risk = entry - sl
-            tp = entry + 2 * risk
+            sl = entry - df["ATR"].iloc[-1]
+            tp = entry + 1.8 * (entry - sl)
 
             return {
                 "symbol": symbol,
@@ -138,18 +141,16 @@ def analyze_symbol(symbol):
                 "tp": round(tp, 2)
             }
 
-        # SELL Conditions
+        # SELL
         if (
             latest["EMA20"] < latest["EMA50"] and
-            entry < latest["EMA20"] and
+            entry < recent_low and
             latest["RSI"] < 45 and
-            entry < prev["LL20"] and
             volume_spike
         ):
 
-            sl = df["High"].rolling(5).max().iloc[-1]
-            risk = sl - entry
-            tp = entry - 2 * risk
+            sl = entry + df["ATR"].iloc[-1]
+            tp = entry - 1.8 * (sl - entry)
 
             return {
                 "symbol": symbol,
@@ -163,7 +164,6 @@ def analyze_symbol(symbol):
 
     except:
         return None
-
 
 # ---------------------------------------------------
 # MAIN
