@@ -1,8 +1,8 @@
-name: Weekly Report
+name: Weekly Performance Report
 
 on:
   schedule:
-    - cron: "30 10 * * 5"   # Friday ~4:00 PM IST
+    - cron: "30 10 * * 5"   # Friday 16:00 IST
   workflow_dispatch:
 
 jobs:
@@ -16,13 +16,10 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
       - name: Run Weekly Report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python Scripts/weekly_report.py
+        run: python Scripts/weekly_report.py
