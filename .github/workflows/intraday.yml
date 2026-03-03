@@ -1,8 +1,8 @@
-name: Intraday Alpha Scan
+name: Hybrid Intraday Engine
 
 on:
   schedule:
-    - cron: "*/15 3-10 * * 1-5"   # 09:15–15:45 IST
+    - cron: "*/15 4-9 * * 1-5"   # 09:30–14:45 IST
   workflow_dispatch:
 
 jobs:
@@ -10,30 +10,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Run Intraday Scanner
+      - name: Run Intraday
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python Scripts/run_intraday.py
-      - name: Commit intraday data
+        run: python Scripts/run_intraday.py
+
+      - name: Commit Signals
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/signals.csv || true
-          git add data/price_log.csv || true
           git add data/alerted_today.csv || true
-          git commit -m "Auto: update intraday data" || echo "No changes"
+          git commit -m "Auto update signals" || echo "No changes"
           git push
