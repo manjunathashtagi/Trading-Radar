@@ -2,7 +2,6 @@ import os
 import sys
 import pandas as pd
 from datetime import datetime
-import pytz
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -25,12 +24,12 @@ def main():
         send_alert("📅 WEEKLY REPORT\nNo signals recorded.")
         return
 
-    df["date"] = pd.to_datetime(df["date"])
+    # Convert to pure date (no timezone)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
 
-    ist = pytz.timezone("Asia/Kolkata")
-    today = datetime.now(ist)
+    today = datetime.today().date()
 
-    # Start of week (Monday)
+    # Monday of current week
     start_week = today - pd.Timedelta(days=today.weekday())
 
     weekly_df = df[df["date"] >= start_week]
