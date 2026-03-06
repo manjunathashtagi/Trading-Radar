@@ -38,12 +38,16 @@ def load_stage1():
 # -----------------------------
 def load_alerted():
 
-    if os.path.exists(ALERT_LOG_FILE):
-        return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
+    if not os.path.exists(ALERT_LOG_FILE):
+        return set()
 
-    return set()
+    df = pd.read_csv(ALERT_LOG_FILE)
 
+    if "date" in df.columns:
+        today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+        df = df[df["date"] == str(today)]
 
+    return set(df["symbol"])
 def save_alerted(symbol):
 
     df = pd.DataFrame([[symbol]], columns=["symbol"])
