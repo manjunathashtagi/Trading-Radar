@@ -13,31 +13,26 @@ if PROJECT_ROOT not in sys.path:
 
 from alerts.telegram_alerts import send_alert
 
-
 CACHE_FILE = "data/stage1_cache.csv"
 SIGNALS_FILE = "data/signals.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
 
 
-# -------------------------
-# Load Stage-1 Watchlist
-# -------------------------
-def load_stage1():
+# -----------------------------
+# Load Stage-1 watchlist
+# -----------------------------
+def load_stage1_watchlist():
 
     if not os.path.exists(CACHE_FILE):
         return []
 
     df = pd.read_csv(CACHE_FILE)
-
-    if "symbol" in df.columns:
-        return df["symbol"].tolist()
-
-    return df.iloc[:, 0].tolist()
+    return df["symbol"].tolist()
 
 
-# -------------------------
+# -----------------------------
 # Prevent duplicate alerts
-# -------------------------
+# -----------------------------
 def load_alerted():
 
     if os.path.exists(ALERT_LOG_FILE):
@@ -56,9 +51,9 @@ def save_alerted(symbol):
         df.to_csv(ALERT_LOG_FILE, index=False)
 
 
-# -------------------------
-# Save signals for reports
-# -------------------------
+# -----------------------------
+# Save signals
+# -----------------------------
 def save_signals(signals):
 
     ist = pytz.timezone("Asia/Kolkata")
@@ -76,7 +71,6 @@ def save_signals(signals):
         "entry",
         "sl",
         "tp",
-        "score",
         "date",
         "trigger_time",
         "result"
@@ -95,76 +89,51 @@ def save_signals(signals):
         df.to_csv(SIGNALS_FILE, index=False)
 
 
-# -------------------------
-# Momentum Scoring Engine
-# -------------------------
-def score_stock(df):
-
-    latest = df.iloc[-1]
-
-    score = 0
-
-    if latest["EMA20"] > latest["EMA50"]:
-        score += 25
-
-    if latest["RSI"] > 55:
-        score += 20
-
-    if latest["Volume"] > 1.3 * df["VOL_AVG"].iloc[-1]:
-        score += 20
-
-    pct_move = ((latest["Close"] - df["Close"].iloc[-6]) /
-                df["Close"].iloc[-6]) * 100
-
-    if pct_move > 1.5:
-        score += 20
-
-    if latest["Close"] > df["High"].rolling(20).max().iloc[-2]:
-        score += 15
-
-    return score
-
-
-# -------------------------
-# ETA to target estimation
-# -------------------------
-def estimate_eta(df, entry, target):
+# -----------------------------
+# ETA Calculation
+# -----------------------------
+def estimate_eta(df, entry, tp):
 
     avg_move = df["Close"].diff().abs().tail(10).mean()
 
-    distance = abs(target - entry)
+    if avg_move == 0:
+        return "Unknown"
 
-    candles = distance / avg_move if avg_move != 0 else 10
+    distance = abs(tp - entry)
 
-    minutes = candles * 15
+    candles_needed = distance / avg_move
+
+    minutes = candles_needed * 15
 
     if minutes < 60:
-        return f"{int(minutes)}m", "⚡ Fast"
+        return f"{int(minutes)}m"
+    elif minutes < 180:
+        return f"{round(minutes/60,1)}h"
+    else:
+        return f"{round(minutes/60,1)}h+"
 
-    if minutes < 180:
-        return f"{int(minutes/60)}h", "📈 Intraday"
 
-    return f"{int(minutes/60)}h+", "🐢 Slow"
-
-
-# -------------------------
-# Signal Engine
-# -------------------------
-def analyze(symbol):
+# -----------------------------
+# Signal Detection Engine
+# -----------------------------
+def analyze_symbol(symbol):
 
     try:
 
-        df = yf.download(symbol + ".NS",
-                         period="5d",
-                         interval="15m",
-                         progress=False)
+        ticker = yf.Ticker(symbol + ".NS")
+        df = ticker.history(period="5d", interval="15m")
 
         if len(df) < 40:
             return None
 
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
-        df["RSI"] = RSIIndicator(df["Close"], 14).rsi()
+
+        df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
+
+        df["HH20"] = df["High"].rolling(20).max()
+        df["LL20"] = df["Low"].rolling(20).min()
+
         df["VOL_AVG"] = df["Volume"].rolling(20).mean()
 
         latest = df.iloc[-1]
@@ -172,40 +141,102 @@ def analyze(symbol):
 
         entry = latest["Close"]
 
-        score = score_stock(df)
+        volume_spike = latest["Volume"] > 1.3 * latest["VOL_AVG"]
 
-        if score < 60:
-            return None
-
-        # BUY breakout or continuation
-        if latest["EMA20"] > latest["EMA50"] and latest["RSI"] > 50:
+        # -----------------------------
+        # 1️⃣ Breakout Momentum
+        # -----------------------------
+        if (
+            entry > prev["HH20"] and
+            latest["EMA20"] > latest["EMA50"] and
+            latest["RSI"] > 55 and
+            volume_spike
+        ):
 
             sl = df["Low"].rolling(5).min().iloc[-1]
             risk = entry - sl
-            target = entry + (2 * risk)
+            tp = entry + 2 * risk
 
-            eta, speed = estimate_eta(df, entry, target)
+            eta = estimate_eta(df, entry, tp)
+
+            score = abs(tp-entry)/entry   # ranking score
 
             return {
                 "symbol": symbol,
                 "action": "BUY",
-                "entry": round(entry, 2),
-                "sl": round(sl, 2),
-                "tp": round(target, 2),
+                "entry": round(entry,2),
+                "sl": round(sl,2),
+                "tp": round(tp,2),
                 "score": score,
-                "eta": eta,
-                "speed": speed
+                "eta": eta
+            }
+
+        # -----------------------------
+        # 2️⃣ Trend Continuation
+        # -----------------------------
+        if (
+            latest["EMA20"] > latest["EMA50"] and
+            entry > latest["EMA20"] and
+            prev["Close"] > prev["EMA20"] and
+            latest["RSI"] > 50
+        ):
+
+            sl = df["Low"].rolling(5).min().iloc[-1]
+            risk = entry - sl
+            tp = entry + 2 * risk
+
+            eta = estimate_eta(df, entry, tp)
+
+            score = abs(tp-entry)/entry
+
+            return {
+                "symbol": symbol,
+                "action": "BUY",
+                "entry": round(entry,2),
+                "sl": round(sl,2),
+                "tp": round(tp,2),
+                "score": score,
+                "eta": eta
+            }
+
+        # -----------------------------
+        # 3️⃣ Bearish Breakdown
+        # -----------------------------
+        if (
+            entry < prev["LL20"] and
+            latest["EMA20"] < latest["EMA50"] and
+            latest["RSI"] < 45 and
+            volume_spike
+        ):
+
+            sl = df["High"].rolling(5).max().iloc[-1]
+            risk = sl - entry
+            tp = entry - 2 * risk
+
+            eta = estimate_eta(df, entry, tp)
+
+            score = abs(tp-entry)/entry
+
+            return {
+                "symbol": symbol,
+                "action": "SELL",
+                "entry": round(entry,2),
+                "sl": round(sl,2),
+                "tp": round(tp,2),
+                "score": score,
+                "eta": eta
             }
 
         return None
 
     except:
+
         return None
 
 
-# -------------------------
+# -----------------------------
 # MAIN
-# -------------------------
+# -----------------------------
 def main():
 
     ist = pytz.timezone("Asia/Kolkata")
@@ -213,11 +244,11 @@ def main():
 
     time_now = now.strftime("%H:%M")
 
-    if not ("09:30" <= time_now <= "15:00"):
-        print("Outside trading window.")
+    if not ("09:30" <= time_now <= "15:30"):
+        print("Outside market hours.")
         return
 
-    symbols = load_stage1()
+    symbols = load_stage1_watchlist()
 
     print(f"Stage-1 stocks: {len(symbols)}")
 
@@ -225,35 +256,59 @@ def main():
 
     signals = []
 
-    for s in symbols:
+    for symbol in symbols:
 
-        signal = analyze(s)
+        signal = analyze_symbol(symbol)
 
-        if signal and s not in alerted:
+        if signal and symbol not in alerted:
+
             signals.append(signal)
-            save_alerted(s)
+            save_alerted(symbol)
 
     if not signals:
+
         print("No new signals.")
         return
 
-    # sort by score
+
+    # -----------------------------
+    # Rank signals and keep top 27
+    # -----------------------------
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)
 
-    # keep best 12
-    signals = signals[:12]
+    signals = signals[:27]
+
 
     save_signals(signals)
 
-    message = f"🚨 <b>AI MOMENTUM SIGNALS</b> | {time_now}\n\n"
+    buy = [s for s in signals if s["action"] == "BUY"]
+    sell = [s for s in signals if s["action"] == "SELL"]
 
-    for s in signals:
+    message = f"🚨 <b>INTRADAY SIGNALS</b> | {time_now}\n\n"
 
-        message += (
-            f"🟢 {s['symbol']} | Score {s['score']}\n"
-            f"Entry {s['entry']} | SL {s['sl']} | Target {s['tp']}\n"
-            f"ETA {s['eta']} {s['speed']}\n\n"
-        )
+    if buy:
+
+        message += f"🟢 BUY SIGNALS ({len(buy)})\n\n"
+
+        for s in buy:
+
+            message += (
+                f"{s['symbol']}\n"
+                f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
+                f"ETA: {s['eta']}\n\n"
+            )
+
+    if sell:
+
+        message += f"\n🔴 SELL SIGNALS ({len(sell)})\n\n"
+
+        for s in sell:
+
+            message += (
+                f"{s['symbol']}\n"
+                f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
+                f"ETA: {s['eta']}\n\n"
+            )
 
     send_alert(message)
 
