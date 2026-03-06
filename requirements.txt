@@ -4,3 +4,4 @@ requests
 nsepython
 yfinance
 ta
+pytz
