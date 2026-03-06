@@ -32,6 +32,9 @@ def main():
     # Monday of current week
     start_week = today - pd.Timedelta(days=today.weekday())
 
+    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+    start_week = pd.Timestamp.today().normalize() - pd.Timedelta(days=pd.Timestamp.today().weekday())
+
     weekly_df = df[df["date"] >= start_week]
 
     if weekly_df.empty:
