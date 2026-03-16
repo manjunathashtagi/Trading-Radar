@@ -12,8 +12,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from alerts.telegram_alerts import send_alert
-from scanners.ai_scoring import calculate_ai_score, estimate_eta
-
 
 CACHE_FILE = "data/stage1_cache.csv"
 SIGNALS_FILE = "data/signals.csv"
@@ -21,7 +19,7 @@ ALERT_LOG_FILE = "data/alerted_today.csv"
 
 
 # -----------------------------
-# Load Stage-1 stocks
+# Load Stage-1 watchlist
 # -----------------------------
 def load_stage1_watchlist():
 
@@ -29,7 +27,6 @@ def load_stage1_watchlist():
         return []
 
     df = pd.read_csv(CACHE_FILE)
-
     return df["symbol"].tolist()
 
 
@@ -55,7 +52,7 @@ def save_alerted(symbol):
 
 
 # -----------------------------
-# Save signals for reports
+# Save signals
 # -----------------------------
 def save_signals(signals):
 
@@ -68,7 +65,7 @@ def save_signals(signals):
     df["trigger_time"] = now.strftime("%H:%M:%S")
     df["result"] = ""
 
-    columns = [
+    cols = [
         "symbol",
         "action",
         "entry",
@@ -81,14 +78,12 @@ def save_signals(signals):
         "result"
     ]
 
-    df = df[columns]
+    df = df[cols]
 
     if os.path.exists(SIGNALS_FILE):
 
         existing = pd.read_csv(SIGNALS_FILE)
-
         combined = pd.concat([existing, df], ignore_index=True)
-
         combined.to_csv(SIGNALS_FILE, index=False)
 
     else:
@@ -97,14 +92,66 @@ def save_signals(signals):
 
 
 # -----------------------------
-# Analyze stock
+# Estimated time to target
+# -----------------------------
+def estimate_eta(risk):
+
+    if risk < 0.5:
+        return "30m"
+
+    if risk < 1.5:
+        return "1h"
+
+    if risk < 3:
+        return "2h"
+
+    return "4h"
+
+
+# -----------------------------
+# AI scoring
+# -----------------------------
+def calculate_score(df):
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    score = 0
+
+    if latest["EMA20"] > latest["EMA50"]:
+        score += 20
+
+    if latest["RSI"] > 55:
+        score += 15
+    elif latest["RSI"] > 48:
+        score += 10
+
+    momentum = (latest["Close"] - prev["Close"]) / prev["Close"]
+
+    if momentum > 0.004:
+        score += 20
+    elif momentum > 0.002:
+        score += 15
+    elif momentum > 0.001:
+        score += 10
+
+    if latest["Volume"] > 1.3 * latest["VOL_AVG"]:
+        score += 20
+
+    if latest["Close"] > prev["HH20"]:
+        score += 20
+
+    return score
+
+
+# -----------------------------
+# Signal Engine
 # -----------------------------
 def analyze_symbol(symbol):
 
     try:
 
         ticker = yf.Ticker(symbol + ".NS")
-
         df = ticker.history(period="5d", interval="15m")
 
         if len(df) < 40:
@@ -113,38 +160,37 @@ def analyze_symbol(symbol):
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
 
-        df["RSI"] = RSIIndicator(df["Close"], 14).rsi()
+        df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
 
         df["HH20"] = df["High"].rolling(20).max()
         df["LL20"] = df["Low"].rolling(20).min()
 
         df["VOL_AVG"] = df["Volume"].rolling(20).mean()
 
-        df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
         entry = latest["Close"]
 
-        volume_spike = latest["Volume"] > 1.2 * latest["VOL_AVG"]
+        score = calculate_score(df)
 
-        score = calculate_ai_score(df)
-
-        if score < 50:
+        if score < 40:
             return None
 
-
-        # BUY
-        if latest["EMA20"] > latest["EMA50"] and latest["RSI"] > 50:
+        # -----------------------------
+        # Accumulation setup
+        # -----------------------------
+        if (
+            latest["EMA20"] > latest["EMA50"] and
+            latest["RSI"] > 48 and
+            latest["Close"] > latest["EMA20"]
+        ):
 
             sl = df["Low"].rolling(5).min().iloc[-1]
-
             risk = entry - sl
+            tp = entry + 2 * risk
 
-            tp = entry + (2 * risk)
-
-            eta = estimate_eta(entry, tp, latest["ATR"])
+            eta = estimate_eta(risk)
 
             return {
                 "symbol": symbol,
@@ -156,17 +202,19 @@ def analyze_symbol(symbol):
                 "eta": eta
             }
 
-
-        # SELL
-        if latest["EMA20"] < latest["EMA50"] and latest["RSI"] < 45:
+        # -----------------------------
+        # Bearish setup
+        # -----------------------------
+        if (
+            latest["EMA20"] < latest["EMA50"] and
+            latest["RSI"] < 45
+        ):
 
             sl = df["High"].rolling(5).max().iloc[-1]
-
             risk = sl - entry
+            tp = entry - 2 * risk
 
-            tp = entry - (2 * risk)
-
-            eta = estimate_eta(entry, tp, latest["ATR"])
+            eta = estimate_eta(risk)
 
             return {
                 "symbol": symbol,
@@ -191,16 +239,13 @@ def analyze_symbol(symbol):
 def main():
 
     ist = pytz.timezone("Asia/Kolkata")
-
     now = datetime.now(ist)
 
-    current_time = now.strftime("%H:%M")
+    time_now = now.strftime("%H:%M")
 
-
-    if not ("09:30" <= current_time <= "15:30"):
+    if not ("09:30" <= time_now <= "15:30"):
         print("Outside market hours.")
         return
-
 
     symbols = load_stage1_watchlist()
 
@@ -210,7 +255,6 @@ def main():
 
     signals = []
 
-
     for symbol in symbols:
 
         signal = analyze_symbol(symbol)
@@ -218,36 +262,23 @@ def main():
         if signal and symbol not in alerted:
 
             signals.append(signal)
-
             save_alerted(symbol)
-
 
     if not signals:
 
         print("No new signals.")
-
         return
 
-
-    # -----------------------------
-    # AI ranking
-    # -----------------------------
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)
 
-
-    # keep best 27
     signals = signals[:27]
 
-
     save_signals(signals)
-
 
     buy = [s for s in signals if s["action"] == "BUY"]
     sell = [s for s in signals if s["action"] == "SELL"]
 
-
-    message = f"🚨 <b>TRADING RADAR</b> | {current_time}\n\n"
-
+    message = f"🚨 <b>TRADING RADAR</b> | {time_now}\n\n"
 
     if buy:
 
@@ -256,12 +287,10 @@ def main():
         for s in buy:
 
             message += (
-                f"{s['symbol']}\n"
-                f"Score: {s['score']}\n"
+                f"{s['symbol']} | Score {s['score']}\n"
                 f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
                 f"ETA: {s['eta']}\n\n"
             )
-
 
     if sell:
 
@@ -270,12 +299,10 @@ def main():
         for s in sell:
 
             message += (
-                f"{s['symbol']}\n"
-                f"Score: {s['score']}\n"
+                f"{s['symbol']} | Score {s['score']}\n"
                 f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
                 f"ETA: {s['eta']}\n\n"
             )
-
 
     send_alert(message)
 
