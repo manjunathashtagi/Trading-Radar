@@ -1,0 +1,33 @@
+name: Train AI Model
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"  # 17:00 IST
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - run: pip install -r requirements.txt
+
+      - name: Build Training Data
+        run: python Scripts/build_market_training_data.py
+
+      - name: Train Model
+        run: python Scripts/train_ai_model.py
+
+      - name: Commit Model
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/ai_model.pkl
+          git commit -m "Update AI model" || echo "No changes"
+          git push
