@@ -1,3 +1,0 @@
-- name: Debug stock
-  run: |
-    python Scripts/debug_stock.py ADANIPOWER
