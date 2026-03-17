@@ -1,90 +1,64 @@
-import os
 import pandas as pd
-import yfinance as yf
 import numpy as np
+import yfinance as yf
 from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator
 
-CACHE_FILE = "data/stage1_cache.csv"
-OUTPUT_FILE = "data/training_data.csv"
+symbols_file = "data/stage1_cache.csv"
+output_file = "data/training_data.csv"
 
+symbols = pd.read_csv(symbols_file)["symbol"].tolist()
 
-def load_symbols():
+rows = []
 
-    if not os.path.exists(CACHE_FILE):
-        print("stage1_cache.csv not found")
-        return []
+print(f"Building dataset from {len(symbols)} stocks")
 
-    df = pd.read_csv(CACHE_FILE)
-    return df["symbol"].tolist()
+for symbol in symbols:
+    try:
+        df = yf.download(symbol + ".NS", period="10d", interval="15m")
 
-
-def build_dataset():
-
-    symbols = load_symbols()
-
-    rows = []
-
-    print(f"Building dataset from {len(symbols)} stocks")
-
-    for symbol in symbols:
-
-        try:
-
-            ticker = yf.Ticker(symbol + ".NS")
-
-            df = ticker.history(period="30d", interval="15m")
-
-            if len(df) < 100:
-                continue
-
-            df["EMA20"] = EMAIndicator(df["Close"], window=20).ema_indicator()
-            df["EMA50"] = EMAIndicator(df["Close"], window=50).ema_indicator()
-            df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
-
-            df["VOL_AVG"] = df["Volume"].rolling(20).mean()
-
-            for i in range(60, len(df) - 8):
-
-                row = df.iloc[i]
-
-                rsi = row["RSI"]
-                ema20 = row["EMA20"]
-                ema50 = row["EMA50"]
-
-                volatility = (df["High"].iloc[i] - df["Low"].iloc[i]) / row["Close"]
-
-                volume_ratio = row["Volume"] / row["VOL_AVG"]
-
-                distance_high = row["Close"] - df["High"].iloc[i-20:i].max()
-
-                future_price = df["Close"].iloc[i + 8]
-
-                move_pct = ((future_price - row["Close"]) / row["Close"]) * 100
-
-                future_move = 1 if move_pct > 1 else 0
-
-                rows.append({
-                    "rsi": rsi,
-                    "ema20": ema20,
-                    "ema50": ema50,
-                    "volatility": volatility,
-                    "volume_ratio": volume_ratio,
-                    "distance_high": distance_high,
-                    "future_move": future_move
-                })
-
-        except:
+        if len(df) < 100:
             continue
 
-    dataset = pd.DataFrame(rows)
+        df["EMA20"] = df["Close"].ewm(span=20).mean()
+        df["EMA50"] = df["Close"].ewm(span=50).mean()
+        df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
 
-    os.makedirs("data", exist_ok=True)
+        df["VOL_SHORT"] = df["Volume"].rolling(10).mean()
+        df["VOL_LONG"] = df["Volume"].rolling(30).mean()
 
-    dataset.to_csv(OUTPUT_FILE, index=False)
+        df["VOL_RATIO"] = df["VOL_SHORT"] / df["VOL_LONG"]
 
-    print(f"Training data saved: {len(dataset)} rows")
+        df["VOLATILITY"] = df["Close"].pct_change().rolling(10).std()
 
+        df["HH20"] = df["High"].rolling(20).max()
+        df["DIST_HIGH"] = (df["HH20"] - df["Close"]) / df["Close"]
 
-if __name__ == "__main__":
-    build_dataset()
+        # 🎯 FUTURE MOVE (KEY UPGRADE)
+        future_high = df["High"].shift(-8).rolling(8).max()  # next 2 hours
+        df["FUTURE_RETURN"] = (future_high - df["Close"]) / df["Close"]
+
+        # Label: 3% move
+        df["TARGET"] = (df["FUTURE_RETURN"] > 0.03).astype(int)
+
+        for i in range(50, len(df) - 10):
+            row = df.iloc[i]
+
+            rows.append({
+                "rsi": row["RSI"],
+                "ema20": row["EMA20"],
+                "ema50": row["EMA50"],
+                "volatility": row["VOLATILITY"],
+                "volume_ratio": row["VOL_RATIO"],
+                "distance_high": row["DIST_HIGH"],
+                "target": row["TARGET"]
+            })
+
+    except:
+        continue
+
+df_final = pd.DataFrame(rows)
+df_final.dropna(inplace=True)
+
+df_final.to_csv(output_file, index=False)
+
+print(f"Training data saved: {len(df_final)} rows")
