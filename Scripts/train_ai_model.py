@@ -18,7 +18,7 @@ def train_model():
 
     df = pd.read_csv(TRAIN_FILE)
 
-    if len(df) < 50:
+    if len(df) < 10:
         print("Not enough training data")
         return
 
