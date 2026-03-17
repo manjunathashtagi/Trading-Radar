@@ -17,6 +17,9 @@ jobs:
           python-version: "3.10"
 
       - run: pip install -r requirements.txt
+      - name: Generate training data
+        run: |
+          python Scripts/generate_training_data.py
       - name: Train AI model
         run: |
           python Scripts/train_ai_model.py
