@@ -1,64 +1,31 @@
-import os
 import pandas as pd
-import joblib
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+import joblib
 
+df = pd.read_csv("data/training_data.csv")
 
-TRAIN_FILE = "data/training_data.csv"
-MODEL_FILE = "data/ai_model.pkl"
+X = df[[
+    "rsi",
+    "ema20",
+    "ema50",
+    "volatility",
+    "volume_ratio",
+    "distance_high"
+]]
 
+y = df["target"]
 
-def train_model():
+model = RandomForestClassifier(
+    n_estimators=300,
+    max_depth=10,
+    random_state=42
+)
 
-    if not os.path.exists(TRAIN_FILE):
-        print("training_data.csv not found")
-        return
+model.fit(X, y)
 
-    df = pd.read_csv(TRAIN_FILE)
+accuracy = model.score(X, y)
+print(f"Model Accuracy: {round(accuracy, 2)}")
 
-    if len(df) < 10:
-        print("Not enough training data")
-        return
+joblib.dump(model, "data/ai_model.pkl")
 
-    features = [
-        "rsi",
-        "ema20",
-        "ema50",
-        "volatility",
-        "volume_ratio",
-        "distance_high"
-    ]
-
-    X = df[features]
-    y = df["future_move"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42
-    )
-
-    model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=8,
-        random_state=42
-    )
-
-    model.fit(X_train, y_train)
-
-    predictions = model.predict(X_test)
-
-    accuracy = accuracy_score(y_test, predictions)
-
-    print(f"Model Accuracy: {accuracy:.2f}")
-
-    joblib.dump(model, MODEL_FILE)
-
-    print("AI model saved → data/ai_model.pkl")
-
-
-if __name__ == "__main__":
-    train_model()
+print("AI model saved")
