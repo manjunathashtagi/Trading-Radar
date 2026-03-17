@@ -2,7 +2,7 @@ name: Hybrid Intraday Engine
 
 on:
   schedule:
-    - cron: "*/15 4-9 * * 1-5"   # 09:30–14:45 IST
+    - cron: "*/5 4-9 * * 1-5"   # 09:30–14:45 IST
   workflow_dispatch:
 
 jobs:
