@@ -50,6 +50,7 @@ def save_alerted(symbol):
 # Save signals
 # -----------------------------
 def save_signals(signals):
+
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
 
@@ -58,8 +59,10 @@ def save_signals(signals):
     df["trigger_time"] = now.strftime("%H:%M:%S")
     df["result"] = ""
 
-    cols = ["symbol", "action", "entry", "sl", "tp", "score", "eta",
-            "date", "trigger_time", "result"]
+    cols = [
+        "symbol", "action", "entry", "sl", "tp",
+        "score", "eta", "date", "trigger_time", "result"
+    ]
 
     df = df[cols]
 
@@ -74,6 +77,7 @@ def save_signals(signals):
 # ETA Prediction
 # -----------------------------
 def estimate_eta(volatility):
+
     if volatility > 0.02:
         return "30m"
     elif volatility > 0.015:
@@ -85,16 +89,17 @@ def estimate_eta(volatility):
 
 
 # -----------------------------
-# Analyze symbol (CORE LOGIC)
+# CORE ANALYSIS
 # -----------------------------
 def analyze(symbol, model):
 
     try:
         df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
-        if len(df) < 40:
+        if len(df) < 50:
             return None
 
+        # Indicators
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
@@ -106,15 +111,13 @@ def analyze(symbol, model):
         df["LL20"] = df["Low"].rolling(20).min()
 
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
         entry = latest["Close"]
 
         # -----------------------------
-        # EARLY DETECTION LOGIC
+        # EARLY DETECTION (PRE-BREAKOUT)
         # -----------------------------
-
         recent_high = df["HH20"].iloc[-1]
+
         near_breakout = entry > 0.96 * recent_high
 
         range_10 = df["High"].rolling(10).max() - df["Low"].rolling(10).min()
@@ -130,7 +133,7 @@ def analyze(symbol, model):
             return None
 
         # -----------------------------
-        # AI FEATURES
+        # AI PREDICTION (YOUR REQUEST)
         # -----------------------------
         volatility = df["Close"].pct_change().rolling(10).std().iloc[-1]
         volume_ratio = latest["VOL_SHORT"] / latest["VOL_LONG"]
@@ -144,9 +147,14 @@ def analyze(symbol, model):
                               distance_high]])
 
         try:
-            ai_score = model.predict_proba(features)[0][1] * 100
+            prob = model.predict_proba(features)[0][1]
+            ai_score = prob * 100
         except:
             ai_score = 50
+
+        # 🔥 IMPORTANT FILTER
+        if ai_score < 60:
+            return None
 
         # -----------------------------
         # FINAL SCORE
@@ -154,8 +162,8 @@ def analyze(symbol, model):
         score = (
             ai_score +
             (10 if volume_build else 0) +
-            (10 if trend_ok else 0) +
-            (10 if near_breakout else 0)
+            (10 if near_breakout else 0) +
+            (10 if trend_ok else 0)
         )
 
         # -----------------------------
@@ -177,7 +185,8 @@ def analyze(symbol, model):
             "eta": eta
         }
 
-    except:
+    except Exception as e:
+        print(f"Error {symbol}: {e}")
         return None
 
 
@@ -194,15 +203,16 @@ def main():
         print("Outside market hours.")
         return
 
+    if not os.path.exists(MODEL_FILE):
+        print("AI model missing")
+        return
+
+    model = joblib.load(MODEL_FILE)
+
     symbols = load_symbols()
     alerted = load_alerted()
 
     print(f"Scanning {len(symbols)} stocks...")
-
-    try:
-        model = joblib.load(MODEL_FILE)
-    except:
-        model = None
 
     signals = []
 
@@ -221,17 +231,13 @@ def main():
         print("No signals.")
         return
 
-    # -----------------------------
-    # SORT & PICK TOP 27
-    # -----------------------------
+    # Sort & limit
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)[:27]
 
     save_signals(signals)
 
-    # -----------------------------
-    # TELEGRAM MESSAGE
-    # -----------------------------
-    message = f"🚨 <b>AI EARLY MOMENTUM RADAR</b> | {time_now}\n\n"
+    # Telegram message
+    message = f"🚨 <b>AI PREDICTIVE RADAR</b> | {time_now}\n\n"
 
     for s in signals:
         message += (
