@@ -6,11 +6,6 @@ import yfinance as yf
 from datetime import datetime
 import pytz
 from ta.momentum import RSIIndicator
-
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
 from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
@@ -18,42 +13,26 @@ SIGNALS_FILE = "data/signals.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
 
 
-# -----------------------------
-# Load Stage-1 watchlist
-# -----------------------------
 def load_stage1_watchlist():
-
     if not os.path.exists(CACHE_FILE):
         return []
-
-    df = pd.read_csv(CACHE_FILE)
-    return df["symbol"].tolist()
+    return pd.read_csv(CACHE_FILE)["symbol"].tolist()
 
 
-# -----------------------------
-# Prevent duplicate alerts
-# -----------------------------
 def load_alerted():
-
     if os.path.exists(ALERT_LOG_FILE):
         return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
-
     return set()
 
 
 def save_alerted(symbol):
-
     df = pd.DataFrame([[symbol]], columns=["symbol"])
-
     if os.path.exists(ALERT_LOG_FILE):
         df.to_csv(ALERT_LOG_FILE, mode="a", header=False, index=False)
     else:
         df.to_csv(ALERT_LOG_FILE, index=False)
 
 
-# -----------------------------
-# Save signals
-# -----------------------------
 def save_signals(signals):
 
     ist = pytz.timezone("Asia/Kolkata")
@@ -65,88 +44,50 @@ def save_signals(signals):
     df["trigger_time"] = now.strftime("%H:%M:%S")
     df["result"] = ""
 
-    cols = [
-        "symbol",
-        "action",
-        "entry",
-        "sl",
-        "tp",
-        "score",
-        "eta",
-        "date",
-        "trigger_time",
-        "result"
+    columns = [
+        "symbol","action","entry","sl","tp",
+        "score","eta","date","trigger_time","result"
     ]
 
-    df = df[cols]
+    df = df[columns]
 
     if os.path.exists(SIGNALS_FILE):
-
         existing = pd.read_csv(SIGNALS_FILE)
-        combined = pd.concat([existing, df], ignore_index=True)
-        combined.to_csv(SIGNALS_FILE, index=False)
-
+        pd.concat([existing,df],ignore_index=True).to_csv(SIGNALS_FILE,index=False)
     else:
-
-        df.to_csv(SIGNALS_FILE, index=False)
-
-
-# -----------------------------
-# Estimated time to target
-# -----------------------------
-def estimate_eta(risk):
-
-    if risk < 0.5:
-        return "30m"
-
-    if risk < 1.5:
-        return "1h"
-
-    if risk < 3:
-        return "2h"
-
-    return "4h"
+        df.to_csv(SIGNALS_FILE,index=False)
 
 
-# -----------------------------
-# AI scoring
-# -----------------------------
-def calculate_score(df):
-
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    score = 0
-
-    if latest["EMA20"] > latest["EMA50"]:
-        score += 20
-
-    if latest["RSI"] > 55:
-        score += 15
-    elif latest["RSI"] > 48:
-        score += 10
-
-    momentum = (latest["Close"] - prev["Close"]) / prev["Close"]
-
-    if momentum > 0.004:
-        score += 20
-    elif momentum > 0.002:
-        score += 15
-    elif momentum > 0.001:
-        score += 10
-
-    if latest["Volume"] > 1.3 * latest["VOL_AVG"]:
-        score += 20
-
-    if latest["Close"] > prev["HH20"]:
-        score += 20
-
-    return score
+def estimate_eta():
+    return "1-2h"
 
 
-# -----------------------------
-# Signal Engine
-# -----------------------------
+# ------------------------------
+# PRE BREAKOUT DETECTOR
+# ------------------------------
+def detect_pre_breakout(df):
+
+    last5_range = df["High"].tail(5).max() - df["Low"].tail(5).min()
+    last20_range = df["High"].tail(20).max() - df["Low"].tail(20).min()
+
+    # volatility squeeze
+    squeeze = last5_range < (0.45 * last20_range)
+
+    # higher lows
+    lows = df["Low"].tail(5).values
+    higher_lows = lows[4] > lows[3] > lows[2]
+
+    # near resistance
+    resistance = df["High"].tail(20).max()
+    close = df["Close"].iloc[-1]
+    near_resistance = close > resistance * 0.985
+
+    return squeeze and higher_lows and near_resistance
+
+
+# ------------------------------
+# ANALYZE SYMBOL
+# ------------------------------
 def analyze_symbol(symbol):
 
     try:
@@ -159,97 +100,50 @@ def analyze_symbol(symbol):
 
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
-
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
 
-        df["HH20"] = df["High"].rolling(20).max()
-        df["LL20"] = df["Low"].rolling(20).min()
-
-        df["VOL_AVG"] = df["Volume"].rolling(20).mean()
-
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
 
         entry = latest["Close"]
 
-        score = calculate_score(df)
+        # PRE BREAKOUT
+        if detect_pre_breakout(df) and 48 < latest["RSI"] < 60:
 
-        if score < 40:
-            return None
-
-        # -----------------------------
-        # Accumulation setup
-        # -----------------------------
-        if (
-            latest["EMA20"] > latest["EMA50"] and
-            latest["RSI"] > 48 and
-            latest["Close"] > latest["EMA20"]
-        ):
-
-            sl = df["Low"].rolling(5).min().iloc[-1]
+            sl = df["Low"].tail(5).min()
             risk = entry - sl
-            tp = entry + 2 * risk
+            tp = entry + 2*risk
 
-            eta = estimate_eta(risk)
-
-            return {
-                "symbol": symbol,
-                "action": "BUY",
-                "entry": round(entry,2),
-                "sl": round(sl,2),
-                "tp": round(tp,2),
-                "score": score,
-                "eta": eta
-            }
-
-        # -----------------------------
-        # Bearish setup
-        # -----------------------------
-        if (
-            latest["EMA20"] < latest["EMA50"] and
-            latest["RSI"] < 45
-        ):
-
-            sl = df["High"].rolling(5).max().iloc[-1]
-            risk = sl - entry
-            tp = entry - 2 * risk
-
-            eta = estimate_eta(risk)
+            score = 65
 
             return {
-                "symbol": symbol,
-                "action": "SELL",
-                "entry": round(entry,2),
-                "sl": round(sl,2),
-                "tp": round(tp,2),
-                "score": score,
-                "eta": eta
+                "symbol":symbol,
+                "action":"BUY",
+                "entry":round(entry,2),
+                "sl":round(sl,2),
+                "tp":round(tp,2),
+                "score":score,
+                "eta":estimate_eta()
             }
 
         return None
 
     except:
-
         return None
 
 
-# -----------------------------
+# ------------------------------
 # MAIN
-# -----------------------------
+# ------------------------------
 def main():
 
     ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-
-    time_now = now.strftime("%H:%M")
+    time_now = datetime.now(ist).strftime("%H:%M")
 
     if not ("09:30" <= time_now <= "15:30"):
         print("Outside market hours.")
         return
 
     symbols = load_stage1_watchlist()
-
-    print(f"Stage-1 stocks: {len(symbols)}")
 
     alerted = load_alerted()
 
@@ -260,49 +154,25 @@ def main():
         signal = analyze_symbol(symbol)
 
         if signal and symbol not in alerted:
-
             signals.append(signal)
             save_alerted(symbol)
 
     if not signals:
-
-        print("No new signals.")
+        print("No signals")
         return
 
-    signals = sorted(signals, key=lambda x: x["score"], reverse=True)
-
-    signals = signals[:27]
+    signals = sorted(signals,key=lambda x:x["score"],reverse=True)[:27]
 
     save_signals(signals)
 
-    buy = [s for s in signals if s["action"] == "BUY"]
-    sell = [s for s in signals if s["action"] == "SELL"]
+    message = f"🚨 <b>PRE-BREAKOUT RADAR</b> | {time_now}\n\n"
 
-    message = f"🚨 <b>TRADING RADAR</b> | {time_now}\n\n"
-
-    if buy:
-
-        message += f"🟢 BUY SIGNALS ({len(buy)})\n\n"
-
-        for s in buy:
-
-            message += (
-                f"{s['symbol']} | Score {s['score']}\n"
-                f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
-                f"ETA: {s['eta']}\n\n"
-            )
-
-    if sell:
-
-        message += f"\n🔴 SELL SIGNALS ({len(sell)})\n\n"
-
-        for s in sell:
-
-            message += (
-                f"{s['symbol']} | Score {s['score']}\n"
-                f"Entry: {s['entry']} | SL: {s['sl']} | Target: {s['tp']}\n"
-                f"ETA: {s['eta']}\n\n"
-            )
+    for s in signals:
+        message += (
+            f"{s['symbol']} | Score {s['score']}\n"
+            f"Entry {s['entry']} | SL {s['sl']} | Target {s['tp']}\n"
+            f"ETA {s['eta']}\n\n"
+        )
 
     send_alert(message)
 
