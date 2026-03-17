@@ -5,3 +5,5 @@ nsepython
 yfinance
 ta
 pytz
+scikit-learn
+joblib
