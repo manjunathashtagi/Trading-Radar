@@ -247,7 +247,11 @@ def main():
         print("Outside market hours.")
         return
 
+    if os.path.exists(MODEL_FILE):
     model = joblib.load(MODEL_FILE)
+else:
+    print("AI model missing → fallback mode")
+    model = None
 
     symbols = load_symbols()
     alerted = load_alerted()
