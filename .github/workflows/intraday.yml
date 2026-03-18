@@ -18,6 +18,10 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # ❌ REMOVE THESE
+      # - Build Training Data
+      # - Train AI Model
+
       - name: Run Intraday
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
