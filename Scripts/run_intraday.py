@@ -15,13 +15,12 @@ if PROJECT_ROOT not in sys.path:
 from alerts.telegram_alerts import send_alert
 
 CACHE_FILE = "data/stage1_cache.csv"
-SIGNALS_FILE = "data/signals.csv"
 ALERT_LOG_FILE = "data/alerted_today.csv"
 MODEL_FILE = "data/ai_model.pkl"
 
 
 # -----------------------------
-# Load Stage-1
+# Load Stage1
 # -----------------------------
 def load_stage1():
     if not os.path.exists(CACHE_FILE):
@@ -30,9 +29,6 @@ def load_stage1():
     return df["symbol"].dropna().tolist()
 
 
-# -----------------------------
-# Prevent duplicate alerts
-# -----------------------------
 def load_alerted():
     if os.path.exists(ALERT_LOG_FILE):
         return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
@@ -48,26 +44,30 @@ def save_alerted(symbol):
 
 
 # -----------------------------
-# Save signals
+# Smart Money Detection
 # -----------------------------
-def save_signals(signals):
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
+def smart_money_score(df):
 
-    df = pd.DataFrame(signals)
-    df["date"] = now.date()
-    df["trigger_time"] = now.strftime("%H:%M:%S")
-    df["result"] = ""
+    # 1. Volume Accumulation
+    vol_short = df["Volume"].rolling(5).mean().iloc[-1]
+    vol_long = df["Volume"].rolling(20).mean().iloc[-1]
+    vol_score = min((vol_short / vol_long) * 30, 30)
 
-    if os.path.exists(SIGNALS_FILE):
-        existing = pd.read_csv(SIGNALS_FILE)
-        df = pd.concat([existing, df], ignore_index=True)
+    # 2. Price Compression (coil)
+    recent_range = df["High"].tail(10).max() - df["Low"].tail(10).min()
+    price = df["Close"].iloc[-1]
+    compression = 1 - (recent_range / price)
+    compression_score = max(min(compression * 30, 30), 0)
 
-    df.to_csv(SIGNALS_FILE, index=False)
+    # 3. Higher Lows (accumulation structure)
+    lows = df["Low"].tail(5).values
+    hl_score = 20 if all(x < y for x, y in zip(lows, lows[1:])) else 0
+
+    return vol_score + compression_score + hl_score
 
 
 # -----------------------------
-# ETA Calculator
+# ETA
 # -----------------------------
 def estimate_eta(volatility):
     if volatility < 0.005:
@@ -81,14 +81,13 @@ def estimate_eta(volatility):
 
 
 # -----------------------------
-# Analyze symbol
+# Analyze
 # -----------------------------
 def analyze(symbol, model):
 
     try:
         df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
-        # FIX yfinance
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -106,24 +105,16 @@ def analyze(symbol, model):
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
 
-        df["VOL_SHORT"] = df["Volume"].rolling(10).mean()
-        df["VOL_LONG"] = df["Volume"].rolling(30).mean()
-
-        df["HH20"] = df["High"].rolling(20).max()
-        df["LL20"] = df["Low"].rolling(20).min()
-
         df["volatility"] = df["Close"].pct_change().rolling(10).std()
+        df["HH20"] = df["High"].rolling(20).max()
 
         df = df.dropna()
 
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
         entry = latest["Close"]
 
-        volume_ratio = latest["VOL_SHORT"] / latest["VOL_LONG"]
-        distance_high = (latest["HH20"] - entry) / entry
         volatility = latest["volatility"]
+        distance_high = (latest["HH20"] - entry) / entry
 
         # -----------------------------
         # AI Score
@@ -132,27 +123,33 @@ def analyze(symbol, model):
                               latest["EMA20"],
                               latest["EMA50"],
                               volatility,
-                              volume_ratio,
                               distance_high]])
 
         if model:
             try:
-                prob = model.predict_proba(features)[0][1]
-                score = prob * 100
+                ai_score = model.predict_proba(features)[0][1] * 100
             except:
-                score = 50
+                ai_score = 50
         else:
-            score = 50
+            ai_score = 50
 
         # -----------------------------
-        # Signal Logic
+        # Smart Money Score
         # -----------------------------
-        volume_spike = latest["Volume"] > 1.3 * latest["VOL_LONG"]
+        sm_score = smart_money_score(df)
 
+        # -----------------------------
+        # Final Score
+        # -----------------------------
+        final_score = (0.6 * ai_score) + (0.4 * sm_score)
+
+        # -----------------------------
+        # Entry Logic (EARLY ENTRY)
+        # -----------------------------
         if (
             latest["EMA20"] > latest["EMA50"] and
-            latest["RSI"] > 55 and
-            volume_spike
+            latest["RSI"] > 50 and
+            final_score > 60
         ):
 
             sl = df["Low"].rolling(5).min().iloc[-1]
@@ -161,11 +158,10 @@ def analyze(symbol, model):
 
             return {
                 "symbol": symbol,
-                "action": "BUY",
                 "entry": round(entry, 2),
                 "sl": round(sl, 2),
                 "tp": round(tp, 2),
-                "score": round(score, 1),
+                "score": round(final_score, 1),
                 "eta": estimate_eta(volatility)
             }
 
@@ -182,51 +178,41 @@ def main():
 
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
-    time_now = now.strftime("%H:%M")
 
-    if not ("09:30" <= time_now <= "15:30"):
+    if not ("09:30" <= now.strftime("%H:%M") <= "15:30"):
         print("Outside market hours.")
         return
 
-    # Load AI model
+    # Load model
     model = None
     if os.path.exists(MODEL_FILE):
         try:
             model = joblib.load(MODEL_FILE)
             print("✅ AI model loaded")
         except:
-            print("❌ Model load failed")
-    else:
-        print("⚠️ No AI model found")
+            print("Model load failed")
 
     symbols = load_stage1()
     alerted = load_alerted()
 
-    print(f"Stage-1 stocks: {len(symbols)}")
+    print(f"Scanning {len(symbols)} stocks...")
 
     signals = []
 
-    for symbol in symbols:
-        signal = analyze(symbol, model)
-        if signal and symbol not in alerted:
+    for s in symbols:
+        signal = analyze(s, model)
+        if signal and s not in alerted:
             signals.append(signal)
-            save_alerted(symbol)
+            save_alerted(s)
 
     if not signals:
-        print("No new signals.")
+        print("No signals")
         return
 
-    # -----------------------------
-    # Rank Top Signals
-    # -----------------------------
+    # Top 27
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)[:27]
 
-    save_signals(signals)
-
-    # -----------------------------
-    # Telegram Message
-    # -----------------------------
-    msg = f"🚨 INTRADAY SIGNALS ({len(signals)})\n\n"
+    msg = "🚨 EARLY MOMENTUM SIGNALS\n\n"
 
     for s in signals:
         msg += (
