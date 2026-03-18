@@ -1,11 +1,11 @@
-import sys
 import os
+import sys
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import pytz
 import joblib
 from datetime import datetime
-import pytz
 from ta.momentum import RSIIndicator
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -21,27 +21,18 @@ MODEL_FILE = "data/ai_model.pkl"
 
 
 # -----------------------------
-# Sector Mapping
+# Load Stage-1
 # -----------------------------
-SECTOR_MAP = {
-    "POWER": ["ADANIPOWER","TATAPOWER","NTPC"],
-    "DEFENSE": ["BDL","BEL","HAL"],
-    "RAIL": ["IRCON","RVNL","RAILTEL"],
-    "CHEMICAL": ["SOLARINDS","SRF","NAVINFLUOR"],
-    "IT": ["INFY","TCS","HCLTECH"],
-    "BANK": ["HDFCBANK","ICICIBANK","AXISBANK"]
-}
-
-
-# -----------------------------
-# Load symbols
-# -----------------------------
-def load_symbols():
+def load_stage1():
     if not os.path.exists(CACHE_FILE):
         return []
-    return pd.read_csv(CACHE_FILE)["symbol"].tolist()
+    df = pd.read_csv(CACHE_FILE)
+    return df["symbol"].dropna().tolist()
 
 
+# -----------------------------
+# Prevent duplicate alerts
+# -----------------------------
 def load_alerted():
     if os.path.exists(ALERT_LOG_FILE):
         return set(pd.read_csv(ALERT_LOG_FILE)["symbol"])
@@ -56,6 +47,9 @@ def save_alerted(symbol):
         df.to_csv(ALERT_LOG_FILE, index=False)
 
 
+# -----------------------------
+# Save signals
+# -----------------------------
 def save_signals(signals):
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
@@ -73,75 +67,41 @@ def save_signals(signals):
 
 
 # -----------------------------
-# Market Direction (NIFTY)
+# ETA Calculator
 # -----------------------------
-def get_market_trend():
-    try:
-        df = yf.download("^NSEI", period="1d", interval="15m")
-        ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
-        price = df["Close"].iloc[-1]
-
-        if price > ema20:
-            return "BULLISH"
-        else:
-            return "BEARISH"
-    except:
-        return "NEUTRAL"
-
-
-# -----------------------------
-# Sector Strength
-# -----------------------------
-def get_sector_score(symbol):
-
-    for sector, stocks in SECTOR_MAP.items():
-        if symbol in stocks:
-            moves = []
-
-            for s in stocks:
-                try:
-                    d = yf.download(s+".NS", period="1d", interval="15m")
-                    change = (d["Close"].iloc[-1] - d["Close"].iloc[-5]) / d["Close"].iloc[-5]
-                    moves.append(change)
-                except:
-                    continue
-
-            if not moves:
-                return 0
-
-            avg_move = np.mean(moves)
-
-            if avg_move > 0.02:
-                return 20
-            elif avg_move > 0.01:
-                return 10
-
-    return 0
-
-
-# -----------------------------
-# ETA
-# -----------------------------
-def estimate_eta(vol):
-    if vol > 0.02:
-        return "30m"
-    elif vol > 0.015:
-        return "1h"
+def estimate_eta(volatility):
+    if volatility < 0.005:
+        return "3-5h"
+    elif volatility < 0.01:
+        return "2-3h"
+    elif volatility < 0.02:
+        return "1-2h"
     else:
-        return "2h"
+        return "30-60m"
 
 
 # -----------------------------
-# CORE ANALYSIS
+# Analyze symbol
 # -----------------------------
-def analyze(symbol, model, market_trend):
+def analyze(symbol, model):
 
     try:
         df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
+        # FIX yfinance
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna()
+
         if len(df) < 50:
             return None
 
+        # Indicators
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
@@ -150,85 +110,66 @@ def analyze(symbol, model, market_trend):
         df["VOL_LONG"] = df["Volume"].rolling(30).mean()
 
         df["HH20"] = df["High"].rolling(20).max()
+        df["LL20"] = df["Low"].rolling(20).min()
+
+        df["volatility"] = df["Close"].pct_change().rolling(10).std()
+
+        df = df.dropna()
 
         latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
         entry = latest["Close"]
 
-        # -----------------------------
-        # Early detection
-        # -----------------------------
-        near_breakout = entry > 0.96 * df["HH20"].iloc[-1]
-
-        range_10 = df["High"].rolling(10).max() - df["Low"].rolling(10).min()
-        tight_range = (range_10.iloc[-1] / entry) < 0.025
-
-        volume_build = latest["VOL_SHORT"] > latest["VOL_LONG"]
-
-        trend_ok = latest["EMA20"] > latest["EMA50"]
-
-        rsi_ok = 50 < latest["RSI"] < 65
-
-        if not (near_breakout and tight_range and volume_build and trend_ok and rsi_ok):
-            return None
-
-        # -----------------------------
-        # AI Prediction
-        # -----------------------------
-        volatility = df["Close"].pct_change().rolling(10).std().iloc[-1]
         volume_ratio = latest["VOL_SHORT"] / latest["VOL_LONG"]
-        distance_high = (df["HH20"].iloc[-1] - entry) / entry
-
-        features = np.array([[latest["RSI"], latest["EMA20"], latest["EMA50"],
-                              volatility, volume_ratio, distance_high]])
-
-        try:
-            prob = model.predict_proba(features)[0][1]
-            ai_score = prob * 100
-        except:
-            ai_score = 50
-
-        if ai_score < 60:
-            return None
+        distance_high = (latest["HH20"] - entry) / entry
+        volatility = latest["volatility"]
 
         # -----------------------------
-        # Relative strength
+        # AI Score
         # -----------------------------
-        nifty = yf.download("^NSEI", period="1d", interval="15m")
-        n_move = (nifty["Close"].iloc[-1] - nifty["Close"].iloc[-5]) / nifty["Close"].iloc[-5]
-        s_move = (df["Close"].iloc[-1] - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
+        features = np.array([[latest["RSI"],
+                              latest["EMA20"],
+                              latest["EMA50"],
+                              volatility,
+                              volume_ratio,
+                              distance_high]])
 
-        rs_score = 20 if s_move > n_move else 0
+        if model:
+            try:
+                prob = model.predict_proba(features)[0][1]
+                score = prob * 100
+            except:
+                score = 50
+        else:
+            score = 50
 
         # -----------------------------
-        # Sector score
+        # Signal Logic
         # -----------------------------
-        sector_score = get_sector_score(symbol)
+        volume_spike = latest["Volume"] > 1.3 * latest["VOL_LONG"]
 
-        # -----------------------------
-        # Market filter
-        # -----------------------------
-        market_score = 10 if market_trend == "BULLISH" else -10
+        if (
+            latest["EMA20"] > latest["EMA50"] and
+            latest["RSI"] > 55 and
+            volume_spike
+        ):
 
-        # -----------------------------
-        # Final score
-        # -----------------------------
-        score = ai_score + rs_score + sector_score + market_score
+            sl = df["Low"].rolling(5).min().iloc[-1]
+            risk = entry - sl
+            tp = entry + 2 * risk
 
-        sl = df["Low"].rolling(5).min().iloc[-1]
-        risk = entry - sl
-        tp = entry + 2 * risk
+            return {
+                "symbol": symbol,
+                "action": "BUY",
+                "entry": round(entry, 2),
+                "sl": round(sl, 2),
+                "tp": round(tp, 2),
+                "score": round(score, 1),
+                "eta": estimate_eta(volatility)
+            }
 
-        eta = estimate_eta(volatility)
-
-        return {
-            "symbol": symbol,
-            "action": "BUY",
-            "entry": round(entry,2),
-            "sl": round(sl,2),
-            "tp": round(tp,2),
-            "score": round(score,1),
-            "eta": eta
-        }
+        return None
 
     except:
         return None
@@ -247,51 +188,54 @@ def main():
         print("Outside market hours.")
         return
 
-    if os.path.exists(MODEL_FILE):
-    model = joblib.load(MODEL_FILE)
-else:
-    print("AI model missing → fallback mode")
+    # Load AI model
     model = None
+    if os.path.exists(MODEL_FILE):
+        try:
+            model = joblib.load(MODEL_FILE)
+            print("✅ AI model loaded")
+        except:
+            print("❌ Model load failed")
+    else:
+        print("⚠️ No AI model found")
 
-    symbols = load_symbols()
+    symbols = load_stage1()
     alerted = load_alerted()
 
-    market_trend = get_market_trend()
-
-    print(f"Market: {market_trend}")
-    print(f"Scanning {len(symbols)} stocks...")
+    print(f"Stage-1 stocks: {len(symbols)}")
 
     signals = []
 
     for symbol in symbols:
-
-        if symbol in alerted:
-            continue
-
-        s = analyze(symbol, model, market_trend)
-
-        if s:
-            signals.append(s)
+        signal = analyze(symbol, model)
+        if signal and symbol not in alerted:
+            signals.append(signal)
             save_alerted(symbol)
 
     if not signals:
-        print("No signals.")
+        print("No new signals.")
         return
 
+    # -----------------------------
+    # Rank Top Signals
+    # -----------------------------
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)[:27]
 
     save_signals(signals)
 
-    message = f"🚨 <b>AI PRO RADAR</b> | {time_now}\nMarket: {market_trend}\n\n"
+    # -----------------------------
+    # Telegram Message
+    # -----------------------------
+    msg = f"🚨 INTRADAY SIGNALS ({len(signals)})\n\n"
 
     for s in signals:
-        message += (
-            f"{s['symbol']} | Score {s['score']}\n"
+        msg += (
+            f"{s['symbol']} ({s['score']})\n"
             f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n"
             f"ETA: {s['eta']}\n\n"
         )
 
-    send_alert(message)
+    send_alert(msg)
 
 
 if __name__ == "__main__":
