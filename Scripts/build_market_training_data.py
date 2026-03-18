@@ -32,14 +32,25 @@ def build():
     # -----------------------------
     # Loop stocks
     # -----------------------------
-    for symbol in symbols[:120]:   # keep full list (your requirement)
+    for symbol in symbols:
 
         try:
             print(f"Processing: {symbol}")
 
             df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
-            if df is None or df.empty or len(df) < 50:
+            # 🔥 FIX 1: flatten multi-index columns
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            # 🔥 FIX 2: ensure numeric 1D columns
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df = df.dropna()
+
+            if df.empty or len(df) < 50:
                 continue
 
             # -----------------------------
@@ -62,7 +73,7 @@ def build():
                 continue
 
             # -----------------------------
-            # Build rows
+            # Build dataset
             # -----------------------------
             for i in range(30, len(df) - 5):
 
@@ -77,7 +88,6 @@ def build():
                     target = 1 if move > 0.02 else 0
 
                     volume_ratio = row["VOL_SHORT"] / row["VOL_LONG"]
-
                     distance_high = (row["HH20"] - current_price) / current_price
 
                     rows.append({
@@ -100,7 +110,7 @@ def build():
     print(f"Total rows generated: {len(rows)}")
 
     # -----------------------------
-    # SAFETY: Always create dataset
+    # Safety fallback
     # -----------------------------
     if not rows:
 
@@ -125,7 +135,7 @@ def build():
     df_final = pd.DataFrame(rows)
 
     # -----------------------------
-    # CLEAN DATA (VERY IMPORTANT)
+    # Clean data
     # -----------------------------
     df_final = df_final.replace([np.inf, -np.inf], np.nan)
     df_final = df_final.dropna()
@@ -148,7 +158,7 @@ def build():
         return
 
     # -----------------------------
-    # Save file
+    # Save dataset
     # -----------------------------
     os.makedirs("data", exist_ok=True)
     df_final.to_csv(OUTPUT_FILE, index=False)
