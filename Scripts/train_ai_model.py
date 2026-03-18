@@ -1,31 +1,53 @@
+import os
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 import joblib
+from sklearn.ensemble import RandomForestClassifier
 
-df = pd.read_csv("data/training_data.csv")
+DATA_FILE = "data/training_data.csv"
+MODEL_FILE = "data/ai_model.pkl"
 
-X = df[[
-    "rsi",
-    "ema20",
-    "ema50",
-    "volatility",
-    "volume_ratio",
-    "distance_high"
-]]
+def main():
 
-y = df["target"]
+    # ❌ File missing
+    if not os.path.exists(DATA_FILE):
+        print("❌ training_data.csv not found")
+        return
 
-model = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=10,
-    random_state=42
-)
+    try:
+        df = pd.read_csv(DATA_FILE)
+    except:
+        print("❌ training_data.csv corrupted")
+        return
 
-model.fit(X, y)
+    # ❌ Empty file
+    if df.empty or len(df.columns) == 0:
+        print("❌ training_data.csv is empty")
+        return
 
-accuracy = model.score(X, y)
-print(f"Model Accuracy: {round(accuracy, 2)}")
+    # Required columns check
+    required_cols = ["RSI","EMA20","EMA50","volatility","volume_ratio","distance_high","target"]
 
-joblib.dump(model, "data/ai_model.pkl")
+    for col in required_cols:
+        if col not in df.columns:
+            print(f"❌ Missing column: {col}")
+            return
 
-print("AI model saved")
+    # ❌ Not enough data
+    if len(df) < 100:
+        print(f"❌ Not enough data ({len(df)} rows)")
+        return
+
+    X = df[["RSI","EMA20","EMA50","volatility","volume_ratio","distance_high"]]
+    y = df["target"]
+
+    model = RandomForestClassifier(n_estimators=100)
+    model.fit(X, y)
+
+    os.makedirs("data", exist_ok=True)
+    joblib.dump(model, MODEL_FILE)
+
+    print(f"✅ Model trained successfully on {len(df)} rows")
+
+
+if __name__ == "__main__":
+    main()
