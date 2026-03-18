@@ -44,22 +44,42 @@ def save_alerted(symbol):
 
 
 # -----------------------------
+# Market Trend (Warning only)
+# -----------------------------
+def market_trend_status():
+
+    df = yf.download("^NSEI", period="2d", interval="15m")
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df["EMA20"] = df["Close"].ewm(span=20).mean()
+    df["EMA50"] = df["Close"].ewm(span=50).mean()
+
+    latest = df.iloc[-1]
+
+    if latest["EMA20"] > latest["EMA50"]:
+        return "BULLISH"
+    else:
+        return "BEARISH"
+
+
+# -----------------------------
 # Smart Money Detection
 # -----------------------------
 def smart_money_score(df):
 
-    # 1. Volume Accumulation
     vol_short = df["Volume"].rolling(5).mean().iloc[-1]
     vol_long = df["Volume"].rolling(20).mean().iloc[-1]
-    vol_score = min((vol_short / vol_long) * 30, 30)
 
-    # 2. Price Compression (coil)
+    vol_score = min((vol_short / vol_long) * 40, 40)
+
     recent_range = df["High"].tail(10).max() - df["Low"].tail(10).min()
     price = df["Close"].iloc[-1]
+
     compression = 1 - (recent_range / price)
     compression_score = max(min(compression * 30, 30), 0)
 
-    # 3. Higher Lows (accumulation structure)
     lows = df["Low"].tail(5).values
     hl_score = 20 if all(x < y for x, y in zip(lows, lows[1:])) else 0
 
@@ -83,11 +103,12 @@ def estimate_eta(volatility):
 # -----------------------------
 # Analyze
 # -----------------------------
-def analyze(symbol, model):
+def analyze(symbol, model, market_status):
 
     try:
         df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
+        # Fix yfinance bug
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -104,7 +125,6 @@ def analyze(symbol, model):
         df["EMA20"] = df["Close"].ewm(span=20).mean()
         df["EMA50"] = df["Close"].ewm(span=50).mean()
         df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
-
         df["volatility"] = df["Close"].pct_change().rolling(10).std()
         df["HH20"] = df["High"].rolling(20).max()
 
@@ -112,6 +132,11 @@ def analyze(symbol, model):
 
         latest = df.iloc[-1]
         entry = latest["Close"]
+
+        # Avoid already pumped stocks
+        recent_move = (df["Close"].iloc[-1] - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
+        if recent_move > 0.04:
+            return None
 
         volatility = latest["volatility"]
         distance_high = (latest["HH20"] - entry) / entry
@@ -143,13 +168,19 @@ def analyze(symbol, model):
         # -----------------------------
         final_score = (0.6 * ai_score) + (0.4 * sm_score)
 
+        # Dynamic threshold
+        if market_status == "BEARISH":
+            min_score = 70
+        else:
+            min_score = 65
+
         # -----------------------------
-        # Entry Logic (EARLY ENTRY)
+        # Entry Logic
         # -----------------------------
         if (
             latest["EMA20"] > latest["EMA50"] and
             latest["RSI"] > 50 and
-            final_score > 60
+            final_score > min_score
         ):
 
             sl = df["Low"].rolling(5).min().iloc[-1]
@@ -183,14 +214,18 @@ def main():
         print("Outside market hours.")
         return
 
-    # Load model
+    # Load AI model
     model = None
     if os.path.exists(MODEL_FILE):
         try:
             model = joblib.load(MODEL_FILE)
             print("✅ AI model loaded")
         except:
-            print("Model load failed")
+            print("❌ Model load failed")
+
+    # Market status
+    market_status = market_trend_status()
+    print(f"Market: {market_status}")
 
     symbols = load_stage1()
     alerted = load_alerted()
@@ -200,7 +235,7 @@ def main():
     signals = []
 
     for s in symbols:
-        signal = analyze(s, model)
+        signal = analyze(s, model, market_status)
         if signal and s not in alerted:
             signals.append(signal)
             save_alerted(s)
@@ -209,10 +244,17 @@ def main():
         print("No signals")
         return
 
-    # Top 27
+    # Top 27 signals
     signals = sorted(signals, key=lambda x: x["score"], reverse=True)[:27]
 
-    msg = "🚨 EARLY MOMENTUM SIGNALS\n\n"
+    # -----------------------------
+    # Telegram Message
+    # -----------------------------
+    msg = f"🚨 EARLY MOMENTUM SIGNALS\n"
+    msg += f"Market: {market_status}\n\n"
+
+    if market_status == "BEARISH":
+        msg += "⚠️ Market is weak — trade cautiously\n\n"
 
     for s in signals:
         msg += (
