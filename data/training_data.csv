@@ -1,0 +1,2 @@
+RSI,EMA20,EMA50,volatility,volume_ratio,distance_high,target
+50,100,100,0.01,1,0.02,0
