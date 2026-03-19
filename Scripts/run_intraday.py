@@ -144,11 +144,13 @@ def analyze(symbol, model, market_status):
         # -----------------------------
         # AI Score
         # -----------------------------
-        features = np.array([[latest["RSI"],
-                              latest["EMA20"],
-                              latest["EMA50"],
-                              volatility,
-                              distance_high]])
+        features = pd.DataFrame([{
+            "RSI": latest["RSI"],
+            "EMA20": latest["EMA20"],
+            "EMA50": latest["EMA50"],
+            "volatility": volatility,
+            "distance_high": distance_high
+        }])
 
         if model:
             try:
