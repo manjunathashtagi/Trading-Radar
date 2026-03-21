@@ -1,5 +1,7 @@
 name: Hybrid Intraday Engine
-
+concurrency:
+  group: intraday
+  cancel-in-progress: true
 on:
   schedule:
     - cron: "*/5 4-9 * * 1-5"   # 09:30–14:45 IST
