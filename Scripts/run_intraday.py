@@ -62,6 +62,12 @@ def compute_features(df):
     df["momentum"] = df["Close"] > df["ma20"]
     df["volume_spike"] = df["Volume"] > df["vol_avg"]
 
+    # 🔥 Compression (pre-breakout)
+    df["range_pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
+
+    # 🔥 Volume accumulation
+    df["vol_trend"] = df["Volume"].rolling(5).mean() > df["Volume"].rolling(20).mean()
+
     df.dropna(inplace=True)
     return df
 
@@ -72,6 +78,12 @@ def load_model():
     if os.path.exists(MODEL_FILE):
         return joblib.load(MODEL_FILE)
     return None
+
+# ==============================
+# MARKET DATA
+# ==============================
+def get_nifty():
+    return yf.download("^NSEI", period="1d", interval="15m")
 
 # ==============================
 # SECTOR INTELLIGENCE
@@ -117,20 +129,43 @@ def send_sector_summary(sector_strength):
     send_telegram(msg)
 
 # ==============================
-# SIGNAL GENERATION
+# SIGNAL GENERATION (PRO LEVEL)
 # ==============================
-def generate_signal(symbol, df, model):
+def generate_signal(symbol, df, model, nifty_df):
     last = df.iloc[-1]
-
     score = 0
 
+    # Basic
     if last["momentum"]:
-        score += 30
+        score += 20
     if last["volume_spike"]:
-        score += 30
+        score += 20
     if last["returns"] > 0:
+        score += 10
+
+    # 🔥 Compression breakout setup
+    if last["range_pct"] < 0.02:
         score += 20
 
+    # 🔥 Smart money accumulation
+    if last["vol_trend"] and abs(last["returns"]) < 0.01:
+        score += 20
+
+    # 🔥 Relative strength vs NIFTY
+    if not nifty_df.empty:
+        stock_ret = df["Close"].pct_change().iloc[-1]
+        nifty_ret = nifty_df["Close"].pct_change().iloc[-1]
+
+        if stock_ret > nifty_ret:
+            score += 20
+
+    # 🔥 Liquidity grab
+    if len(df) > 10:
+        prev_low = df["Low"].rolling(10).min().iloc[-2]
+        if last["Low"] < prev_low and last["Close"] > last["Open"]:
+            score += 20
+
+    # AI boost
     ai_score = 0
     if model:
         X = pd.DataFrame([{
@@ -176,7 +211,7 @@ def save_trade(signal):
         row.to_csv(TRADES_FILE, index=False)
 
 # ==============================
-# LIVE PRICE
+# UPDATE TRADES
 # ==============================
 def get_price(symbol):
     try:
@@ -185,9 +220,6 @@ def get_price(symbol):
     except:
         return None
 
-# ==============================
-# UPDATE TRADES
-# ==============================
 def update_trades():
     if not os.path.exists(TRADES_FILE):
         return
@@ -286,12 +318,10 @@ def market_trend():
 # ==============================
 def run_scan():
     model = load_model()
+    nifty_df = get_nifty()
 
     trend = market_trend()
     send_telegram(f"Market: {trend}")
-
-    if trend == "BEARISH":
-        send_telegram("⚠️ Market weak — trade carefully")
 
     sector_strength = get_sector_strength()
     send_sector_summary(sector_strength)
@@ -307,24 +337,19 @@ def run_scan():
             continue
 
         df = compute_features(df)
-        sig = generate_signal(stock, df, model)
+        sig = generate_signal(stock, df, model, nifty_df)
 
         sector = sector_map.get(stock, None)
-
         if sector:
             strength = sector_strength.get(sector, 0)
+            sig["score"] += 10 if strength > 0 else -10
 
-            if strength > 0:
-                sig["score"] += 10
-            else:
-                sig["score"] -= 10
-
-        if sig["score"] > 60:
+        if sig["score"] > 65:
             signals.append(sig)
             save_trade(sig)
 
     if signals:
-        msg = "🚨 SIGNALS\n\n"
+        msg = "🚨 PRO SIGNALS\n\n"
         for s in signals:
             msg += f"""{s['symbol']} ({s['score']})
 Entry: {s['entry']:.2f}
