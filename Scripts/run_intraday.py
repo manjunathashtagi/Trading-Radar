@@ -3,20 +3,31 @@ import pandas as pd
 import numpy as np
 import requests
 import os
-import joblib
 
 # ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-MODEL_FILE = "model.pkl"
-
-STOCKS = [
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
-    "SBIN", "LT", "ITC", "BHARTIARTL", "ASIANPAINT",
-    "AXISBANK", "KOTAKBANK", "MARUTI", "SUNPHARMA",
-    "TITAN", "ULTRACEMCO", "WIPRO", "NESTLEIND"
-]
+STOCKS = {
+    "RELIANCE": "ENERGY",
+    "TCS": "IT",
+    "INFY": "IT",
+    "HDFCBANK": "BANK",
+    "ICICIBANK": "BANK",
+    "SBIN": "BANK",
+    "LT": "INFRA",
+    "ITC": "FMCG",
+    "BHARTIARTL": "TELCO",
+    "ASIANPAINT": "FMCG",
+    "AXISBANK": "BANK",
+    "KOTAKBANK": "BANK",
+    "MARUTI": "AUTO",
+    "SUNPHARMA": "PHARMA",
+    "TITAN": "CONSUMPTION",
+    "ULTRACEMCO": "INFRA",
+    "WIPRO": "IT",
+    "NESTLEIND": "FMCG"
+}
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
@@ -26,164 +37,178 @@ def send_telegram(msg):
     except:
         pass
 
-# ================= DATA =================
-def fetch_data(symbol):
-    df = yf.download(symbol + ".NS", period="5d", interval="15m")
+# ================= FII/DII =================
+def get_fii_dii():
+    try:
+        url = "https://www.nseindia.com/api/fiidiiTradeReact"
+        headers = {"User-Agent": "Mozilla/5.0"}
 
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers)
+        response = session.get(url, headers=headers)
+
+        data = response.json()["data"]
+        df = pd.DataFrame(data)
+        latest = df.iloc[0]
+
+        return float(latest["fiiNet"]), float(latest["diiNet"])
+    except:
+        return 0, 0
+
+def get_bias(fii, dii):
+    if dii > 0 and fii < 0:
+        return "HIDDEN_BULLISH"
+    elif fii > 0 and dii > 0:
+        return "STRONG_BULLISH"
+    elif fii < 0 and dii < 0:
+        return "BEARISH"
+    return "NEUTRAL"
+
+# ================= DATA =================
+def fetch(symbol):
+    df = yf.download(symbol + ".NS", period="5d", interval="15m")
     if df.empty:
         return df
 
-    # 🔥 flatten columns
     df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-    # 🔥 ensure numeric
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
+    df = df.apply(pd.to_numeric, errors="coerce")
     df.dropna(inplace=True)
     return df
 
-# ================= MARKET TREND =================
-def market_trend():
-    df = yf.download("^NSEI", period="1d", interval="15m")
+# ================= MARKET =================
+def nifty_data():
+    df = fetch("^NSEI")
+    return df
 
+def market_trend(df):
     if df.empty:
         return "NEUTRAL"
-
-    # 🔥 fix
-    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-    df["Open"] = pd.to_numeric(df["Open"], errors="coerce")
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-
-    df.dropna(inplace=True)
-
-    if df.empty:
-        return "NEUTRAL"
-
-    open_price = float(df["Open"].iloc[0])
-    close_price = float(df["Close"].iloc[-1])
-
-    if close_price > open_price:
-        return "BULLISH"
-    else:
-        return "BEARISH"
+    return "BULLISH" if df["Close"].iloc[-1] > df["Open"].iloc[0] else "BEARISH"
 
 # ================= FEATURES =================
 def add_features(df):
     df["EMA20"] = df["Close"].ewm(span=20).mean()
     df["EMA50"] = df["Close"].ewm(span=50).mean()
 
-    df["RSI"] = 100 - (100 / (1 + (
-        df["Close"].diff().clip(lower=0).rolling(14).mean() /
-        df["Close"].diff().clip(upper=0).abs().rolling(14).mean()
-    )))
-
     df["VOL_SPIKE"] = df["Volume"] / df["Volume"].rolling(20).mean()
+
+    df["RS"] = df["Close"].pct_change(5)
 
     df.dropna(inplace=True)
     return df
 
-# ================= SMART MONEY =================
-def smart_money_score(df):
-    latest = df.iloc[-1]
+# ================= SECTOR STRENGTH =================
+def sector_strength():
+    sector_perf = {}
 
-    score = 0
+    for stock, sector in STOCKS.items():
+        df = fetch(stock)
+        if df.empty:
+            continue
 
-    if latest["VOL_SPIKE"] > 1.5:
-        score += 1
+        change = (df["Close"].iloc[-1] - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
 
-    if latest["Close"] > latest["EMA20"]:
-        score += 1
+        if sector not in sector_perf:
+            sector_perf[sector] = []
 
-    if latest["EMA20"] > latest["EMA50"]:
-        score += 1
+        sector_perf[sector].append(change)
 
-    return score
+    sector_avg = {k: np.mean(v) for k, v in sector_perf.items() if v}
+
+    if not sector_avg:
+        return []
+
+    strong = sorted(sector_avg, key=sector_avg.get, reverse=True)
+
+    return strong[:2]  # top 2 sectors
 
 # ================= SIGNAL =================
-def generate_signal(symbol, df, trend):
+def generate(stock, df, trend, bias, strong_sectors):
     df = add_features(df)
-
     if df.empty:
         return None
 
     latest = df.iloc[-1]
-
     score = 0
 
-    # Trend alignment
+    # Trend
     if trend == "BULLISH" and latest["Close"] > latest["EMA20"]:
-        score += 1
-
-    if trend == "BEARISH" and latest["Close"] < latest["EMA20"]:
-        score += 1
-
-    # RSI
-    if 50 < latest["RSI"] < 70:
         score += 1
 
     # Volume
     if latest["VOL_SPIKE"] > 1.3:
         score += 1
 
-    # Smart money
-    score += smart_money_score(df)
+    # Structure
+    if latest["EMA20"] > latest["EMA50"]:
+        score += 1
 
-    confidence = round((score / 5) * 100, 1)
+    # Relative strength
+    if latest["RS"] > 0:
+        score += 1
 
-    if confidence < 60:
+    # Sector filter 🔥
+    if STOCKS[stock] in strong_sectors:
+        score += 1
+
+    # Bias
+    if bias in ["HIDDEN_BULLISH", "STRONG_BULLISH"]:
+        score += 1
+    elif bias == "BEARISH":
+        score -= 1
+
+    confidence = round((score / 6) * 100, 1)
+
+    if confidence < 65:
         return None
 
     entry = float(latest["Close"])
-    sl = round(entry * 0.98, 2)
-    tp = round(entry * 1.04, 2)
 
     return {
-        "symbol": symbol,
+        "symbol": stock,
         "confidence": confidence,
         "entry": entry,
-        "sl": sl,
-        "tp": tp
+        "sl": round(entry * 0.98, 2),
+        "tp": round(entry * 1.05, 2)
     }
 
-# ================= MAIN SCAN =================
-def run_scan():
-    trend = market_trend()
+# ================= MAIN =================
+def run():
+    fii, dii = get_fii_dii()
+    bias = get_bias(fii, dii)
 
-    print(f"Market: {trend}")
+    nifty = nifty_data()
+    trend = market_trend(nifty)
+
+    strong_sectors = sector_strength()
+
+    print(f"Market: {trend}, Bias: {bias}, Strong sectors: {strong_sectors}")
 
     signals = []
 
     for stock in STOCKS:
-        df = fetch_data(stock)
-
+        df = fetch(stock)
         if df.empty:
             continue
 
-        signal = generate_signal(stock, df, trend)
+        sig = generate(stock, df, trend, bias, strong_sectors)
 
-        if signal:
-            signals.append(signal)
+        if sig:
+            signals.append(sig)
 
     if not signals:
-        send_telegram(f"⚠️ Market: {trend}\nNo strong signals found")
+        send_telegram(
+            f"⚠️ No signals\nMarket: {trend}\nBias: {bias}\nStrong: {strong_sectors}"
+        )
         return
 
-    msg = f"🚨 EARLY MOMENTUM SIGNALS\nMarket: {trend}\n\n"
+    msg = f"🚨 SMART MONEY SIGNALS\nMarket: {trend}\nBias: {bias}\nStrong Sectors: {strong_sectors}\n\n"
 
     for s in signals:
-        msg += (
-            f"{s['symbol']} ({s['confidence']})\n"
-            f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n\n"
-        )
+        msg += f"{s['symbol']} ({s['confidence']})\nEntry: {s['entry']} SL:{s['sl']} TP:{s['tp']}\n\n"
 
     send_telegram(msg)
 
-# ================= MAIN =================
-def main():
-    run_scan()
-
+# ================= RUN =================
 if __name__ == "__main__":
-    main()
+    run()
