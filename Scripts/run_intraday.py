@@ -1,379 +1,189 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
 import requests
+import os
 import joblib
-from datetime import datetime
-from sklearn.ensemble import RandomForestClassifier
 
-# ==============================
-# CONFIG
-# ==============================
-DATA_DIR = "data"
-TRADES_FILE = f"{DATA_DIR}/trades_log.csv"
-MODEL_FILE = f"{DATA_DIR}/ai_model.pkl"
-SECTOR_FILE = f"{DATA_DIR}/sector_map.csv"
-
+# ================= CONFIG =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+MODEL_FILE = "model.pkl"
 
 STOCKS = [
-    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK",
-    "SBIN","AXISBANK","ITC","LT","BAJFINANCE",
-    "JSWSTEEL","TATASTEEL","JINDALSTEL","VODAFONEIDEA"
+    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+    "SBIN", "LT", "ITC", "BHARTIARTL", "ASIANPAINT",
+    "AXISBANK", "KOTAKBANK", "MARUTI", "SUNPHARMA",
+    "TITAN", "ULTRACEMCO", "WIPRO", "NESTLEIND"
 ]
 
-# ==============================
-# TELEGRAM
-# ==============================
+# ================= TELEGRAM =================
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
 
-# ==============================
-# FETCH DATA
-# ==============================
+# ================= DATA =================
 def fetch_data(symbol):
     df = yf.download(symbol + ".NS", period="5d", interval="15m")
 
     if df.empty:
-        return None
+        return df
 
+    # 🔥 flatten columns
     df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-    for col in ["Open","High","Low","Close","Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # 🔥 ensure numeric
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df.dropna(inplace=True)
     return df
 
-# ==============================
-# FEATURES
-# ==============================
-def compute_features(df):
-    df["returns"] = df["Close"].pct_change()
-    df["ma20"] = df["Close"].rolling(20).mean()
-    df["vol_avg"] = df["Volume"].rolling(20).mean()
-
-    df["momentum"] = df["Close"] > df["ma20"]
-    df["volume_spike"] = df["Volume"] > df["vol_avg"]
-
-    # 🔥 Compression (pre-breakout)
-    df["range_pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
-
-    # 🔥 Volume accumulation
-    df["vol_trend"] = df["Volume"].rolling(5).mean() > df["Volume"].rolling(20).mean()
-
-    df.dropna(inplace=True)
-    return df
-
-# ==============================
-# AI MODEL
-# ==============================
-def load_model():
-    if os.path.exists(MODEL_FILE):
-        return joblib.load(MODEL_FILE)
-    return None
-
-# ==============================
-# MARKET DATA
-# ==============================
-def get_nifty():
-    return yf.download("^NSEI", period="1d", interval="15m")
-
-# ==============================
-# SECTOR INTELLIGENCE
-# ==============================
-def get_sector_strength():
-    if not os.path.exists(SECTOR_FILE):
-        return {}
-
-    sector_df = pd.read_csv(SECTOR_FILE)
-    sector_scores = {}
-
-    for sector in sector_df["sector"].unique():
-        stocks = sector_df[sector_df["sector"] == sector]["symbol"]
-
-        moves = []
-
-        for s in stocks:
-            try:
-                df = yf.download(s + ".NS", period="1d", interval="15m")
-                if df.empty:
-                    continue
-
-                change = (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
-                moves.append(change)
-            except:
-                continue
-
-        if moves:
-            sector_scores[sector] = np.mean(moves)
-
-    return sector_scores
-
-def send_sector_summary(sector_strength):
-    if not sector_strength:
-        return
-
-    sorted_sec = sorted(sector_strength.items(), key=lambda x: x[1], reverse=True)
-
-    msg = "📊 Sector Strength:\n\n"
-    for sec, val in sorted_sec[:5]:
-        msg += f"{sec}: {round(val*100,2)}%\n"
-
-    send_telegram(msg)
-
-# ==============================
-# SIGNAL GENERATION (PRO LEVEL)
-# ==============================
-def generate_signal(symbol, df, model, nifty_df):
-    last = df.iloc[-1]
-    score = 0
-
-    # Basic
-    if last["momentum"]:
-        score += 20
-    if last["volume_spike"]:
-        score += 20
-    if last["returns"] > 0:
-        score += 10
-
-    # 🔥 Compression breakout setup
-    if last["range_pct"] < 0.02:
-        score += 20
-
-    # 🔥 Smart money accumulation
-    if last["vol_trend"] and abs(last["returns"]) < 0.01:
-        score += 20
-
-    # 🔥 Relative strength vs NIFTY
-    if not nifty_df.empty:
-        stock_ret = df["Close"].pct_change().iloc[-1]
-        nifty_ret = nifty_df["Close"].pct_change().iloc[-1]
-
-        if stock_ret > nifty_ret:
-            score += 20
-
-    # 🔥 Liquidity grab
-    if len(df) > 10:
-        prev_low = df["Low"].rolling(10).min().iloc[-2]
-        if last["Low"] < prev_low and last["Close"] > last["Open"]:
-            score += 20
-
-    # AI boost
-    ai_score = 0
-    if model:
-        X = pd.DataFrame([{
-            "entry": last["Close"],
-            "sl": last["Close"] * 0.98,
-            "tp": last["Close"] * 1.04,
-            "score": score
-        }])
-        ai_score = model.predict_proba(X)[0][1] * 100
-
-    final_score = (score + ai_score) / 2
-
-    return {
-        "symbol": symbol,
-        "entry": last["Close"],
-        "sl": last["Close"] * 0.98,
-        "tp": last["Close"] * 1.04,
-        "score": round(final_score, 1)
-    }
-
-# ==============================
-# SAVE TRADE
-# ==============================
-def save_trade(signal):
-    now = datetime.now()
-
-    row = pd.DataFrame([{
-        "symbol": signal["symbol"],
-        "entry": signal["entry"],
-        "sl": signal["sl"],
-        "tp": signal["tp"],
-        "score": signal["score"],
-        "date": now.date(),
-        "time": now.strftime("%H:%M"),
-        "status": "OPEN",
-        "exit_price": None,
-        "exit_time": None
-    }])
-
-    if os.path.exists(TRADES_FILE):
-        row.to_csv(TRADES_FILE, mode="a", header=False, index=False)
-    else:
-        row.to_csv(TRADES_FILE, index=False)
-
-# ==============================
-# UPDATE TRADES
-# ==============================
-def get_price(symbol):
-    try:
-        df = yf.download(symbol + ".NS", period="1d", interval="1m")
-        return df["Close"].iloc[-1]
-    except:
-        return None
-
-def update_trades():
-    if not os.path.exists(TRADES_FILE):
-        return
-
-    df = pd.read_csv(TRADES_FILE)
-
-    for i, row in df.iterrows():
-        if row["status"] != "OPEN":
-            continue
-
-        price = get_price(row["symbol"])
-        if price is None:
-            continue
-
-        if price >= row["tp"]:
-            df.at[i, "status"] = "WIN"
-            df.at[i, "exit_price"] = price
-            df.at[i, "exit_time"] = datetime.now()
-
-        elif price <= row["sl"]:
-            df.at[i, "status"] = "LOSS"
-            df.at[i, "exit_price"] = price
-            df.at[i, "exit_time"] = datetime.now()
-
-    df.to_csv(TRADES_FILE, index=False)
-
-# ==============================
-# EOD REPORT
-# ==============================
-def generate_eod():
-    if not os.path.exists(TRADES_FILE):
-        return
-
-    df = pd.read_csv(TRADES_FILE)
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-
-    today = datetime.now().date()
-    df = df[df["date"] == today]
-
-    wins = len(df[df["status"] == "WIN"])
-    losses = len(df[df["status"] == "LOSS"])
-    open_trades = len(df[df["status"] == "OPEN"])
-
-    total = len(df)
-    acc = (wins / total * 100) if total > 0 else 0
-
-    msg = f"""
-📊 EOD REPORT
-
-Total: {total}
-Wins: {wins}
-Losses: {losses}
-Open: {open_trades}
-Accuracy: {acc:.1f}%
-"""
-
-    send_telegram(msg)
-
-# ==============================
-# TRAIN AI
-# ==============================
-def train_ai():
-    if not os.path.exists(TRADES_FILE):
-        return
-
-    df = pd.read_csv(TRADES_FILE)
-    df = df[df["status"].isin(["WIN","LOSS"])]
-
-    if len(df) < 20:
-        return
-
-    df["target"] = df["status"].apply(lambda x: 1 if x == "WIN" else 0)
-
-    X = df[["entry","sl","tp","score"]]
-    y = df["target"]
-
-    model = RandomForestClassifier()
-    model.fit(X, y)
-
-    joblib.dump(model, MODEL_FILE)
-
-# ==============================
-# MARKET TREND
-# ==============================
+# ================= MARKET TREND =================
 def market_trend():
     df = yf.download("^NSEI", period="1d", interval="15m")
+
     if df.empty:
         return "NEUTRAL"
 
-    if df["Close"].iloc[-1] > df["Open"].iloc[0]:
+    # 🔥 fix
+    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+    df["Open"] = pd.to_numeric(df["Open"], errors="coerce")
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+
+    df.dropna(inplace=True)
+
+    if df.empty:
+        return "NEUTRAL"
+
+    open_price = float(df["Open"].iloc[0])
+    close_price = float(df["Close"].iloc[-1])
+
+    if close_price > open_price:
         return "BULLISH"
-    return "BEARISH"
+    else:
+        return "BEARISH"
 
-# ==============================
-# MAIN SCANNER
-# ==============================
+# ================= FEATURES =================
+def add_features(df):
+    df["EMA20"] = df["Close"].ewm(span=20).mean()
+    df["EMA50"] = df["Close"].ewm(span=50).mean()
+
+    df["RSI"] = 100 - (100 / (1 + (
+        df["Close"].diff().clip(lower=0).rolling(14).mean() /
+        df["Close"].diff().clip(upper=0).abs().rolling(14).mean()
+    )))
+
+    df["VOL_SPIKE"] = df["Volume"] / df["Volume"].rolling(20).mean()
+
+    df.dropna(inplace=True)
+    return df
+
+# ================= SMART MONEY =================
+def smart_money_score(df):
+    latest = df.iloc[-1]
+
+    score = 0
+
+    if latest["VOL_SPIKE"] > 1.5:
+        score += 1
+
+    if latest["Close"] > latest["EMA20"]:
+        score += 1
+
+    if latest["EMA20"] > latest["EMA50"]:
+        score += 1
+
+    return score
+
+# ================= SIGNAL =================
+def generate_signal(symbol, df, trend):
+    df = add_features(df)
+
+    if df.empty:
+        return None
+
+    latest = df.iloc[-1]
+
+    score = 0
+
+    # Trend alignment
+    if trend == "BULLISH" and latest["Close"] > latest["EMA20"]:
+        score += 1
+
+    if trend == "BEARISH" and latest["Close"] < latest["EMA20"]:
+        score += 1
+
+    # RSI
+    if 50 < latest["RSI"] < 70:
+        score += 1
+
+    # Volume
+    if latest["VOL_SPIKE"] > 1.3:
+        score += 1
+
+    # Smart money
+    score += smart_money_score(df)
+
+    confidence = round((score / 5) * 100, 1)
+
+    if confidence < 60:
+        return None
+
+    entry = float(latest["Close"])
+    sl = round(entry * 0.98, 2)
+    tp = round(entry * 1.04, 2)
+
+    return {
+        "symbol": symbol,
+        "confidence": confidence,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp
+    }
+
+# ================= MAIN SCAN =================
 def run_scan():
-    model = load_model()
-    nifty_df = get_nifty()
-
     trend = market_trend()
-    send_telegram(f"Market: {trend}")
 
-    sector_strength = get_sector_strength()
-    send_sector_summary(sector_strength)
-
-    sector_df = pd.read_csv(SECTOR_FILE) if os.path.exists(SECTOR_FILE) else pd.DataFrame()
-    sector_map = dict(zip(sector_df.get("symbol", []), sector_df.get("sector", [])))
+    print(f"Market: {trend}")
 
     signals = []
 
     for stock in STOCKS:
         df = fetch_data(stock)
-        if df is None:
+
+        if df.empty:
             continue
 
-        df = compute_features(df)
-        sig = generate_signal(stock, df, model, nifty_df)
+        signal = generate_signal(stock, df, trend)
 
-        sector = sector_map.get(stock, None)
-        if sector:
-            strength = sector_strength.get(sector, 0)
-            sig["score"] += 10 if strength > 0 else -10
+        if signal:
+            signals.append(signal)
 
-        if sig["score"] > 65:
-            signals.append(sig)
-            save_trade(sig)
+    if not signals:
+        send_telegram(f"⚠️ Market: {trend}\nNo strong signals found")
+        return
 
-    if signals:
-        msg = "🚨 PRO SIGNALS\n\n"
-        for s in signals:
-            msg += f"""{s['symbol']} ({s['score']})
-Entry: {s['entry']:.2f}
-SL: {s['sl']:.2f}
-TP: {s['tp']:.2f}
+    msg = f"🚨 EARLY MOMENTUM SIGNALS\nMarket: {trend}\n\n"
 
-"""
-        send_telegram(msg)
-    else:
-        print("No signals")
+    for s in signals:
+        msg += (
+            f"{s['symbol']} ({s['confidence']})\n"
+            f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n\n"
+        )
 
-# ==============================
-# MAIN
-# ==============================
+    send_telegram(msg)
+
+# ================= MAIN =================
 def main():
-    now = datetime.now().hour
-
-    if now < 15:
-        run_scan()
-        update_trades()
-    else:
-        update_trades()
-        generate_eod()
-        train_ai()
+    run_scan()
 
 if __name__ == "__main__":
     main()
