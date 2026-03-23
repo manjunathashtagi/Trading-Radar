@@ -7,17 +7,30 @@ import joblib
 from datetime import datetime
 
 # ================= CONFIG =================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-DATA_PATH = "data"
-MODEL_FILE = f"{DATA_PATH}/ai_model.pkl"
-SIGNALS_FILE = f"{DATA_PATH}/signals.csv"
+MODEL_FILE = "model.pkl"
+
+STOCKS = [
+    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC","LT",
+    "AXISBANK","KOTAKBANK","BHARTIARTL","ASIANPAINT","MARUTI","HCLTECH",
+    "WIPRO","ULTRACEMCO","TITAN","BAJFINANCE","NESTLEIND","POWERGRID",
+    "NTPC","ONGC","ADANIENT","ADANIPORTS","JSWSTEEL","TATASTEEL",
+    "HINDALCO","COALINDIA","DRREDDY","SUNPHARMA","CIPLA","DIVISLAB"
+]
+
+SECTOR_MAP = {
+    "INFY":"IT","TCS":"IT","HCLTECH":"IT","WIPRO":"IT",
+    "RELIANCE":"ENERGY","ONGC":"ENERGY","COALINDIA":"ENERGY",
+    "ICICIBANK":"BANK","HDFCBANK":"BANK","SBIN":"BANK","AXISBANK":"BANK",
+    "SUNPHARMA":"PHARMA","DRREDDY":"PHARMA","CIPLA":"PHARMA",
+}
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except:
         pass
@@ -25,10 +38,7 @@ def send_telegram(msg):
 # ================= FETCH =================
 def fetch(symbol):
     try:
-        if symbol.startswith("^"):
-            ticker = symbol
-        else:
-            ticker = symbol + ".NS"
+        ticker = symbol if symbol.startswith("^") else symbol + ".NS"
 
         df = yf.download(ticker, period="5d", interval="15m")
 
@@ -36,99 +46,108 @@ def fetch(symbol):
             return df
 
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        df = df.apply(pd.to_numeric, errors="coerce")
-        df.dropna(inplace=True)
 
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df.dropna(inplace=True)
         return df
-    except:
+
+    except Exception as e:
+        print(f"Fetch error {symbol}: {e}")
         return pd.DataFrame()
 
-# ================= MARKET =================
+# ================= FEATURES =================
+def add_features(df):
+    df["ret"] = df["Close"].pct_change()
+    df["vol_spike"] = df["Volume"] / df["Volume"].rolling(20).mean()
+    df["ma20"] = df["Close"].rolling(20).mean()
+    df["ma50"] = df["Close"].rolling(50).mean()
+    df["momentum"] = df["Close"] - df["Close"].shift(10)
+    return df.dropna()
+
+# ================= MARKET TREND =================
 def market_trend():
     df = fetch("^NSEI")
 
     if df.empty:
-        return "NEUTRAL"
+        return "NEUTRAL", "NEUTRAL"
 
-    try:
-        open_price = float(df["Open"].iloc[0])
-        close_price = float(df["Close"].iloc[-1])
+    close = df["Close"].iloc[-1]
+    open_ = df["Open"].iloc[0]
 
-        if close_price > open_price * 1.003:
-            return "BULLISH"
-        elif close_price < open_price * 0.997:
-            return "BEARISH"
-        else:
-            return "NEUTRAL"
-    except:
-        return "NEUTRAL"
+    if close > open_:
+        return "BULLISH", "LONG"
+    elif close < open_:
+        return "BEARISH", "SHORT"
+    else:
+        return "NEUTRAL", "NEUTRAL"
 
-# ================= SECTOR =================
-def get_sector(symbol):
-    try:
-        sector_map = pd.read_csv(f"{DATA_PATH}/sector_map.csv")
-        row = sector_map[sector_map["Symbol"] == symbol]
-        if not row.empty:
-            return row.iloc[0]["Sector"]
-    except:
-        pass
-    return "UNKNOWN"
-
+# ================= SECTOR STRENGTH =================
 def sector_strength():
-    try:
-        df = pd.read_csv(SIGNALS_FILE)
+    scores = {}
 
+    for stock in STOCKS:
+        sector = SECTOR_MAP.get(stock)
+        if not sector:
+            continue
+
+        df = fetch(stock)
         if df.empty:
-            return []
+            continue
 
-        sector_perf = df.groupby("sector")["score"].mean()
-        strong = sector_perf[sector_perf > 60].index.tolist()
+        change = (df["Close"].iloc[-1] - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
 
-        return strong
-    except:
-        return []
+        scores.setdefault(sector, []).append(change)
 
-# ================= FEATURES =================
-def calculate_features(df):
-    df["returns"] = df["Close"].pct_change()
-    df["vol_avg"] = df["Volume"].rolling(10).mean()
+    strong = []
+    for sector, vals in scores.items():
+        if np.mean(vals) > 0:
+            strong.append(sector)
 
-    return df
+    return strong
+
+# ================= AI MODEL =================
+def load_model():
+    if os.path.exists(MODEL_FILE):
+        model = joblib.load(MODEL_FILE)
+        print("✅ AI model loaded")
+        return model
+    return None
 
 # ================= SIGNAL =================
-def generate_signal(symbol, model, strong_sectors):
-    df = fetch(symbol)
+def generate_signal(stock, df, model, market_bias, strong_sectors):
+    df = add_features(df)
 
-    if df.empty or len(df) < 20:
+    if df.empty:
         return None
-
-    df = calculate_features(df)
 
     latest = df.iloc[-1]
 
-    volume_spike = latest["Volume"] > latest["vol_avg"] * 1.5
-    breakout = latest["Close"] > df["High"].rolling(20).max().iloc[-2]
+    features = pd.DataFrame([[
+        latest["ret"],
+        latest["vol_spike"],
+        latest["momentum"]
+    ]], columns=["ret","vol_spike","momentum"])
 
-    sector = get_sector(symbol)
+    score = 50
 
-    score = 0
+    if model:
+        score = model.predict_proba(features)[0][1] * 100
 
-    if volume_spike:
-        score += 20
-    if breakout:
-        score += 25
-    if sector in strong_sectors:
-        score += 15
+    # Boost logic
+    if SECTOR_MAP.get(stock) in strong_sectors:
+        score += 5
 
-    # AI boost
-    try:
-        features = np.array([[latest["returns"], latest["Volume"]]])
-        ai_pred = model.predict(features)[0]
+    if market_bias == "LONG":
+        score += 5
+    elif market_bias == "SHORT":
+        score -= 5
 
-        if ai_pred == 1:
-            score += 25
-    except:
-        pass
+    # Smart money (volume spike)
+    if latest["vol_spike"] > 1.5:
+        score += 5
 
     if score < 60:
         return None
@@ -138,64 +157,49 @@ def generate_signal(symbol, model, strong_sectors):
     tp = entry * 1.04
 
     return {
-        "symbol": symbol,
-        "score": round(score, 1),
-        "entry": round(entry, 2),
-        "sl": round(sl, 2),
-        "tp": round(tp, 2),
-        "sector": sector
+        "stock": stock,
+        "score": round(score,1),
+        "entry": round(entry,2),
+        "sl": round(sl,2),
+        "tp": round(tp,2)
     }
 
-# ================= MAIN =================
+# ================= MAIN SCAN =================
 def run_scan():
-    print("Running scan...")
+    model = load_model()
 
-    trend = market_trend()
-    strong_sectors = sector_strength()
+    trend, bias = market_trend()
+    sectors = sector_strength()
 
-    print("Market:", trend)
-    print("Strong sectors:", strong_sectors)
-
-    # Load AI
-    if os.path.exists(MODEL_FILE):
-        model = joblib.load(MODEL_FILE)
-        print("✅ AI model loaded")
-    else:
-        model = None
-        print("⚠️ No AI model")
-
-    symbols = [
-        "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK",
-        "SBIN","ITC","LT","AXISBANK","KOTAKBANK",
-        "TATASTEEL","JSWSTEEL","HINDALCO","ADANIENT",
-        "BHARTIARTL","MARUTI","M&M","SUNPHARMA"
-    ]
+    print(f"Market: {trend}, Bias: {bias}, Strong sectors: {sectors}")
 
     signals = []
 
-    for symbol in symbols:
-        sig = generate_signal(symbol, model, strong_sectors)
+    for stock in STOCKS:
+        df = fetch(stock)
+        if df.empty:
+            continue
 
+        sig = generate_signal(stock, df, model, bias, sectors)
         if sig:
             signals.append(sig)
 
     if not signals:
+        send_telegram(f"⚠️ Market {trend} - No strong signals")
         print("No signals")
         return
 
-    df = pd.DataFrame(signals)
-    df.to_csv(SIGNALS_FILE, index=False)
+    msg = f"🚨 SIGNALS\nMarket: {trend}\n\n"
 
-    msg = "🚨 EARLY MOMENTUM SIGNALS\n"
-    msg += f"Market: {trend}\n\n"
-
-    for s in signals:
-        msg += f"{s['symbol']} ({s['score']})\n"
-        msg += f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n\n"
+    for s in signals[:5]:
+        msg += (
+            f"{s['stock']} ({s['score']})\n"
+            f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n\n"
+        )
 
     send_telegram(msg)
 
-# ================= RUN =================
+# ================= MAIN =================
 def main():
     run_scan()
 
