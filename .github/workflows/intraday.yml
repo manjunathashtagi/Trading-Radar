@@ -1,40 +1,49 @@
-name: Hybrid Intraday Engine
-concurrency:
-  group: intraday
-  cancel-in-progress: true
+name: Intraday
+
 on:
   schedule:
-    - cron: "*/5 4-9 * * 1-5"   # 09:30–14:45 IST
+    # ✅ Runs every 5 min from 09:15 to 15:30 IST
+    - cron: "*/5 3-10 * * 1-5"
+  
+  # ✅ Manual trigger (VERY IMPORTANT)
   workflow_dispatch:
 
 jobs:
-  intraday:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
 
-      - uses: actions/setup-python@v5
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - run: pip install -r requirements.txt
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas numpy scikit-learn requests
 
-      # ❌ REMOVE THESE
-      # - Build Training Data
-      # - Train AI Model
-
-      - name: Run Intraday
+      - name: 🚀 Run Intraday Script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Scripts/run_intraday.py
+        run: |
+          python Scripts/run_intraday.py
 
-      - name: Commit Signals
+      # ✅ FIXED PUSH ISSUE (VERY IMPORTANT)
+      - name: 💾 Commit & Push Data
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
+          git pull origin main --rebase
+
           git add data/signals.csv || true
           git add data/alerted_today.csv || true
+
           git commit -m "Auto update signals" || echo "No changes"
-          git push
+
+          git push origin main
