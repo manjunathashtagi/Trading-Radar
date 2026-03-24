@@ -4,6 +4,7 @@ import numpy as np
 import os
 import requests
 import joblib
+import time
 
 # ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,25 +28,26 @@ def send(msg):
     except:
         pass
 
-# ================= FETCH =================
+# ================= SAFE DOWNLOAD =================
 def safe_download(symbol):
-    for attempt in range(3):  # retry 3 times
-        try:
-            df = safe_download(symbol)
+    ticker = symbol if symbol.startswith("^") else symbol + ".NS"
 
-            if df is None:
-                continue
+    for attempt in range(3):
+        try:
+            df = yf.download(ticker, period="5d", interval="15m", progress=False)
 
             if df.empty:
                 raise ValueError("Empty data")
 
-            # flatten columns
-            df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+            # Flatten columns
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-            # numeric conversion
-            for col in ["Open", "High", "Low", "Close", "Volume"]:
+            # Numeric conversion
+            for col in ["Open","High","Low","Close","Volume"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df.dropna(inplace=True)
 
             return df
 
@@ -53,14 +55,15 @@ def safe_download(symbol):
             print(f"Retry {attempt+1} failed for {symbol}")
             time.sleep(1.5)
 
-    print(f"❌ Skipping {symbol} after retries")
+    print(f"❌ Skipping {symbol}")
     return None
 
 # ================= MARKET =================
 def market_return():
-    df = fetch("^NSEI")
-    if df.empty:
+    df = safe_download("^NSEI")
+    if df is None:
         return 0
+
     return (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
 
 # ================= FEATURES =================
@@ -71,9 +74,10 @@ def features(df):
     return df.dropna()
 
 # ================= SIGNAL =================
-def signal(stock, model, mkt_ret):
-    df = fetch(stock)
-    if df.empty or len(df) < 30:
+def generate_signal(stock, model, mkt_ret):
+    df = safe_download(stock)
+
+    if df is None or len(df) < 30:
         return None
 
     df = features(df)
@@ -83,22 +87,22 @@ def signal(stock, model, mkt_ret):
 
     score = 50
 
-    # RELATIVE STRENGTH (🔥 KEY FIX)
+    # 🔥 RELATIVE STRENGTH
     if stock_ret > mkt_ret:
         score += 15
 
-    # VOLUME BURST
+    # 🔥 VOLUME BURST (SMART MONEY)
     if latest["vol_ratio"] > 1.8:
         score += 15
 
-    # MOMENTUM
+    # 🔥 MOMENTUM
     if latest["momentum"] > 0:
         score += 10
 
-    # AI
+    # 🔥 AI MODEL
     if model:
-        X = pd.DataFrame([[latest["ret"], latest["vol_ratio"], latest["momentum"]]],
-                         columns=["ret","vol_ratio","momentum"])
+        X = pd.DataFrame([[latest["ret"], latest["vol_ratio"], latest["momentum"]],
+                         ], columns=["ret","vol_ratio","momentum"])
         score += model.predict_proba(X)[0][1] * 20
 
     if score < 65:
@@ -110,8 +114,8 @@ def signal(stock, model, mkt_ret):
         "stock": stock,
         "score": round(score,1),
         "entry": round(price,2),
-        "sl": round(price*0.98,2),
-        "tp": round(price*1.05,2)
+        "sl": round(price * 0.98,2),
+        "tp": round(price * 1.05,2)
     }
 
 # ================= MAIN =================
@@ -119,26 +123,42 @@ def main():
     model = joblib.load(MODEL_FILE) if os.path.exists(MODEL_FILE) else None
 
     mkt_ret = market_return()
-    trend = "BULLISH" if mkt_ret > 0 else "BEARISH"
+
+    if mkt_ret > 0:
+        trend = "BULLISH"
+    elif mkt_ret < 0:
+        trend = "BEARISH"
+    else:
+        trend = "NEUTRAL"
 
     print(f"Market: {trend}")
 
     results = []
 
-    for s in STOCKS:
-        sig = signal(s, model, mkt_ret)
+    for stock in STOCKS:
+        sig = generate_signal(stock, model, mkt_ret)
+
         if sig:
             results.append(sig)
 
+        time.sleep(0.3)  # 🔥 rate limit protection
+
     if not results:
         send(f"⚠️ Market {trend} - No strong signals")
+        print("No signals")
         return
 
     msg = f"🚀 SMART MONEY SIGNALS\nMarket: {trend}\n\n"
 
     for r in results[:5]:
-        msg += f"{r['stock']} ({r['score']})\n"
-        msg += f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
+        msg += (
+            f"{r['stock']} ({r['score']})\n"
+            f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
+        )
+
+    # ⚠️ Add warning if bearish
+    if trend == "BEARISH":
+        msg += "\n⚠️ Market Bearish - Trade Carefully"
 
     send(msg)
 
