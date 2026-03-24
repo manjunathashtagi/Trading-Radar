@@ -2,7 +2,7 @@ name: Daily NSE Stage-1 Builder
 
 on:
   schedule:
-    - cron: "40 3 * * 1-5"   # 09:05 IST
+    - cron: "30 3 * * 1-5"   # Start earlier (buffer)
   workflow_dispatch:
 
 jobs:
@@ -10,22 +10,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repo
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Setup Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Stage-1 Scan
+      # 🔥 TIME CONTROL FIX (CRITICAL)
+      - name: ⏰ Wait until 09:15 IST
+        run: |
+          python - << 'EOF'
+          import time
+          from datetime import datetime
+          import pytz
+
+          tz = pytz.timezone("Asia/Kolkata")
+
+          while True:
+              now = datetime.now(tz)
+              if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
+                  print("✅ Time reached, starting scan...")
+                  break
+              print(f"⏳ Waiting... Current time: {now}")
+              time.sleep(30)
+          EOF
+
+      - name: 🚀 Run Stage-1 Scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -47,10 +66,15 @@ jobs:
           )
           EOF
 
-      - name: Commit Stage-1 Cache
+      # ✅ FIX PUSH ERROR ALSO
+      - name: 💾 Commit Stage-1 Cache
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
+          git pull origin main --rebase
+
           git add data/stage1_cache.csv
           git commit -m "Auto: update Stage-1 cache" || echo "No changes"
-          git push
+
+          git push origin main
