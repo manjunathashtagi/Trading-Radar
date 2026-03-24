@@ -28,19 +28,33 @@ def send(msg):
         pass
 
 # ================= FETCH =================
-def fetch(symbol):
-    ticker = symbol if symbol.startswith("^") else symbol + ".NS"
-    try:
-        df = yf.download(ticker, period="5d", interval="15m")
-        if df.empty:
+def safe_download(symbol):
+    for attempt in range(3):  # retry 3 times
+        try:
+            df = safe_download(symbol)
+
+            if df is None:
+                continue
+
+            if df.empty:
+                raise ValueError("Empty data")
+
+            # flatten columns
+            df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+
+            # numeric conversion
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
             return df
 
-        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        df = df.apply(pd.to_numeric, errors="coerce")
-        df.dropna(inplace=True)
-        return df
-    except:
-        return pd.DataFrame()
+        except Exception as e:
+            print(f"Retry {attempt+1} failed for {symbol}")
+            time.sleep(1.5)
+
+    print(f"❌ Skipping {symbol} after retries")
+    return None
 
 # ================= MARKET =================
 def market_return():
