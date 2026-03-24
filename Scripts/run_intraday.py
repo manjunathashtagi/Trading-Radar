@@ -1,20 +1,17 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import os
 import requests
 import time
-import warnings
-import logging
 from datetime import datetime
-
-# ================= SILENCE =================
-warnings.filterwarnings("ignore")
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+DATA_DIR = "data"
+ALERT_FILE = f"{DATA_DIR}/alerted_today.csv"
+SIGNAL_FILE = f"{DATA_DIR}/signals.csv"
 
 STOCKS = [
     "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
@@ -22,6 +19,8 @@ STOCKS = [
     "TATASTEEL","JSWSTEEL","HINDALCO","ADANIENT",
     "TATAMOTORS","INDIGO","ZOMATO","SHRIRAMFIN"
 ]
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ================= TELEGRAM =================
 def send(msg):
@@ -33,71 +32,72 @@ def send(msg):
     except:
         pass
 
-# ================= DATA FETCH =================
+# ================= LOAD ALERT MEMORY =================
+def load_alerted():
+    if not os.path.exists(ALERT_FILE):
+        return set()
+
+    df = pd.read_csv(ALERT_FILE)
+    today = str(datetime.now().date())
+
+    return set(df[df["date"] == today]["stock"].tolist())
+
+def save_alert(stock):
+    today = str(datetime.now().date())
+
+    df = pd.DataFrame([[stock, today]], columns=["stock","date"])
+
+    if os.path.exists(ALERT_FILE):
+        df.to_csv(ALERT_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(ALERT_FILE, index=False)
+
+# ================= SAVE SIGNAL =================
+def save_signal(data):
+    df = pd.DataFrame([data])
+
+    if os.path.exists(SIGNAL_FILE):
+        df.to_csv(SIGNAL_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(SIGNAL_FILE, index=False)
+
+# ================= FETCH =================
 def fetch(symbol):
     try:
-        df = yf.download(
-            symbol + ".NS",
-            period="1d",
-            interval="5m",
-            progress=False,
-            threads=False
-        )
+        df = yf.download(symbol + ".NS", period="1d", interval="5m", progress=False)
         if df is not None and not df.empty:
             df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
             return df
     except:
-        pass
-    return None
+        return None
 
-# ================= OPENING BLAST LOGIC =================
+# ================= LOGIC =================
 def opening_blast(stock):
     df = fetch(stock)
 
     if df is None or len(df) < 5:
         return None
 
-    df = df.copy()
+    first = df.iloc[:3]
 
-    # First 15 min candle
-    first_15 = df.iloc[:3]
+    open_price = first["Open"].iloc[0]
+    high_15 = first["High"].max()
+    vol_15 = first["Volume"].sum()
 
-    open_price = first_15["Open"].iloc[0]
-    high_15 = first_15["High"].max()
-    vol_15 = first_15["Volume"].sum()
-
-    # Latest candle
     latest = df.iloc[-1]
-    current_price = latest["Close"]
+    price = latest["Close"]
 
-    # Avg volume
     avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
 
-    # ================= CONDITIONS =================
-
-    # 🔥 1. Breakout above first 15 min high
-    breakout = current_price > high_15
-
-    # 🔥 2. Volume explosion
+    breakout = price > high_15
     vol_spike = vol_15 > (avg_vol * 2)
+    strength = (price - open_price) / open_price
 
-    # 🔥 3. Price strength
-    strength = (current_price - open_price) / open_price
-
-    # 🔥 SCORE
     score = 0
-
-    if breakout:
-        score += 40
-
-    if vol_spike:
-        score += 30
-
-    if strength > 0.01:
-        score += 20
-
-    if strength > 0.02:
-        score += 10
+    if breakout: score += 40
+    if vol_spike: score += 30
+    if strength > 0.01: score += 20
+    if strength > 0.02: score += 10
 
     if score < 60:
         return None
@@ -105,69 +105,44 @@ def opening_blast(stock):
     return {
         "stock": stock,
         "score": score,
-        "entry": round(current_price,2),
+        "entry": round(price,2),
         "sl": round(open_price * 0.98,2),
-        "tp": round(current_price * 1.04,2)
+        "tp": round(price * 1.04,2),
+        "time": datetime.now().strftime("%H:%M")
     }
-
-# ================= MARKET TREND (LIGHT FILTER) =================
-def market_trend():
-    try:
-        df = yf.download("^NSEI", period="1d", interval="5m", progress=False)
-        if df is None or df.empty:
-            return "NEUTRAL"
-
-        open_price = df["Open"].iloc[0]
-        current = df["Close"].iloc[-1]
-
-        change = (current - open_price) / open_price
-
-        if change > 0.003:
-            return "BULLISH"
-        elif change < -0.003:
-            return "BEARISH"
-        else:
-            return "NEUTRAL"
-    except:
-        return "NEUTRAL"
 
 # ================= MAIN =================
 def main():
-    trend = market_trend()
-    print("Market:", trend)
-
+    alerted = load_alerted()
     results = []
 
     for stock in STOCKS:
         try:
             sig = opening_blast(stock)
 
-            if sig:
+            if sig and stock not in alerted:
                 results.append(sig)
+
+                save_alert(stock)
+                save_signal(sig)
 
             time.sleep(0.5)
         except:
             continue
 
     if not results:
-        send(f"⚠️ No Opening Blast Signals\nMarket: {trend}")
-        return
+        return  # no spam
 
-    # Sort best first
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    msg = "🚀 OPENING BLAST SIGNALS\n\n"
 
-    msg = f"🚀 OPENING BLAST SIGNALS\nMarket: {trend}\n\n"
-
-    for r in results[:5]:
+    for r in results:
         msg += (
             f"{r['stock']} ({r['score']})\n"
-            f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
+            f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n"
+            f"Time: {r['time']}\n\n"
         )
-
-    msg += "\n⏰ Ideal Entry: 9:20–10:15"
 
     send(msg)
 
-# ================= RUN =================
 if __name__ == "__main__":
     main()
