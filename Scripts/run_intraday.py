@@ -5,6 +5,10 @@ import os
 import requests
 import joblib
 import time
+import warnings
+
+# 🔥 REMOVE YAHOO NOISE
+warnings.filterwarnings("ignore")
 
 # ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -28,12 +32,12 @@ def send(msg):
     except:
         pass
 
-# ================= SAFE DOWNLOAD (FIXED) =================
+# ================= SAFE DOWNLOAD (FINAL) =================
 def safe_download(symbol):
     tickers = [symbol + ".NS", symbol] if not symbol.startswith("^") else [symbol]
 
     for ticker in tickers:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 df = yf.download(
                     ticker,
@@ -44,9 +48,9 @@ def safe_download(symbol):
                 )
 
                 if df is None or df.empty:
-                    raise ValueError("Empty")
+                    raise Exception("Empty")
 
-                # Flatten columns
+                # flatten columns
                 df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
                 for col in ["Open","High","Low","Close","Volume"]:
@@ -60,7 +64,7 @@ def safe_download(symbol):
             except:
                 time.sleep(1)
 
-    print(f"❌ Skipping {symbol}")
+    # 🔥 SILENT FAIL (no spam logs)
     return None
 
 # ================= MARKET =================
@@ -93,19 +97,19 @@ def generate_signal(stock, model, mkt_ret):
 
     score = 50
 
-    # 🔥 Relative strength
+    # relative strength
     if stock_ret > mkt_ret:
         score += 15
 
-    # 🔥 Smart money (volume spike)
+    # volume spike (smart money)
     if latest["vol_ratio"] > 1.8:
         score += 15
 
-    # 🔥 Momentum
+    # momentum
     if latest["momentum"] > 0:
         score += 10
 
-    # 🔥 AI
+    # AI
     if model:
         X = pd.DataFrame(
             [[latest["ret"], latest["vol_ratio"], latest["momentum"]]],
@@ -132,12 +136,7 @@ def main():
 
     mkt_ret = market_return()
 
-    if mkt_ret > 0:
-        trend = "BULLISH"
-    elif mkt_ret < 0:
-        trend = "BEARISH"
-    else:
-        trend = "NEUTRAL"
+    trend = "BULLISH" if mkt_ret > 0 else "BEARISH" if mkt_ret < 0 else "NEUTRAL"
 
     print(f"Market: {trend}")
 
@@ -149,11 +148,10 @@ def main():
         if sig:
             results.append(sig)
 
-        time.sleep(0.4)  # 🔥 avoid Yahoo blocking
+        time.sleep(0.5)  # 🔥 avoid Yahoo blocking
 
     if not results:
         send(f"⚠️ Market {trend} - No strong signals")
-        print("No signals")
         return
 
     msg = f"🚀 SMART MONEY SIGNALS\nMarket: {trend}\n\n"
