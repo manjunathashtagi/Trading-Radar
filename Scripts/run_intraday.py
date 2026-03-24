@@ -28,32 +28,37 @@ def send(msg):
     except:
         pass
 
-# ================= SAFE DOWNLOAD =================
+# ================= SAFE DOWNLOAD (FIXED) =================
 def safe_download(symbol):
-    ticker = symbol if symbol.startswith("^") else symbol + ".NS"
+    tickers = [symbol + ".NS", symbol] if not symbol.startswith("^") else [symbol]
 
-    for attempt in range(3):
-        try:
-            df = yf.download(ticker, period="5d", interval="15m", progress=False)
+    for ticker in tickers:
+        for attempt in range(2):
+            try:
+                df = yf.download(
+                    ticker,
+                    period="5d",
+                    interval="15m",
+                    progress=False,
+                    threads=False
+                )
 
-            if df.empty:
-                raise ValueError("Empty data")
+                if df is None or df.empty:
+                    raise ValueError("Empty")
 
-            # Flatten columns
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+                # Flatten columns
+                df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-            # Numeric conversion
-            for col in ["Open","High","Low","Close","Volume"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                for col in ["Open","High","Low","Close","Volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            df.dropna(inplace=True)
+                df.dropna(inplace=True)
 
-            return df
+                return df
 
-        except Exception as e:
-            print(f"Retry {attempt+1} failed for {symbol}")
-            time.sleep(1.5)
+            except:
+                time.sleep(1)
 
     print(f"❌ Skipping {symbol}")
     return None
@@ -61,7 +66,8 @@ def safe_download(symbol):
 # ================= MARKET =================
 def market_return():
     df = safe_download("^NSEI")
-    if df is None:
+
+    if df is None or len(df) < 5:
         return 0
 
     return (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
@@ -87,22 +93,24 @@ def generate_signal(stock, model, mkt_ret):
 
     score = 50
 
-    # 🔥 RELATIVE STRENGTH
+    # 🔥 Relative strength
     if stock_ret > mkt_ret:
         score += 15
 
-    # 🔥 VOLUME BURST (SMART MONEY)
+    # 🔥 Smart money (volume spike)
     if latest["vol_ratio"] > 1.8:
         score += 15
 
-    # 🔥 MOMENTUM
+    # 🔥 Momentum
     if latest["momentum"] > 0:
         score += 10
 
-    # 🔥 AI MODEL
+    # 🔥 AI
     if model:
-        X = pd.DataFrame([[latest["ret"], latest["vol_ratio"], latest["momentum"]],
-                         ], columns=["ret","vol_ratio","momentum"])
+        X = pd.DataFrame(
+            [[latest["ret"], latest["vol_ratio"], latest["momentum"]]],
+            columns=["ret","vol_ratio","momentum"]
+        )
         score += model.predict_proba(X)[0][1] * 20
 
     if score < 65:
@@ -141,7 +149,7 @@ def main():
         if sig:
             results.append(sig)
 
-        time.sleep(0.3)  # 🔥 rate limit protection
+        time.sleep(0.4)  # 🔥 avoid Yahoo blocking
 
     if not results:
         send(f"⚠️ Market {trend} - No strong signals")
@@ -156,7 +164,6 @@ def main():
             f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
         )
 
-    # ⚠️ Add warning if bearish
     if trend == "BEARISH":
         msg += "\n⚠️ Market Bearish - Trade Carefully"
 
