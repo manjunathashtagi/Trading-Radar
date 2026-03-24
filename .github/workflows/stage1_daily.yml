@@ -67,14 +67,15 @@ jobs:
           EOF
 
       # ✅ FIX PUSH ERROR ALSO
-      - name: 💾 Commit Stage-1 Cache
+      - name: Commit Stage-1 Cache
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git pull origin main --rebase
-
           git add data/stage1_cache.csv
+
           git commit -m "Auto: update Stage-1 cache" || echo "No changes"
+
+          git pull origin main --rebase
 
           git push origin main
