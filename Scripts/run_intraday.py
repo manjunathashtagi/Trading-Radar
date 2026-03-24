@@ -6,9 +6,11 @@ import requests
 import joblib
 import time
 import warnings
+import logging
 
-# 🔥 REMOVE YAHOO NOISE
+# 🔥 COMPLETE SILENCE
 warnings.filterwarnings("ignore")
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -32,25 +34,41 @@ def send(msg):
     except:
         pass
 
-# ================= SAFE DOWNLOAD (FINAL) =================
+# ================= SAFE DOWNLOAD (ULTIMATE FIX) =================
+def fetch_data(ticker):
+    try:
+        # METHOD 1
+        df = yf.download(
+            ticker,
+            period="5d",
+            interval="15m",
+            progress=False,
+            threads=False
+        )
+        if df is not None and not df.empty:
+            return df
+    except:
+        pass
+
+    try:
+        # METHOD 2 (fallback - different API)
+        df = yf.Ticker(ticker).history(period="5d", interval="15m")
+        if df is not None and not df.empty:
+            return df
+    except:
+        pass
+
+    return None
+
+
 def safe_download(symbol):
     tickers = [symbol + ".NS", symbol] if not symbol.startswith("^") else [symbol]
 
     for ticker in tickers:
-        for attempt in range(3):
-            try:
-                df = yf.download(
-                    ticker,
-                    period="5d",
-                    interval="15m",
-                    progress=False,
-                    threads=False
-                )
+        for _ in range(2):
+            df = fetch_data(ticker)
 
-                if df is None or df.empty:
-                    raise Exception("Empty")
-
-                # flatten columns
+            if df is not None and not df.empty:
                 df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
                 for col in ["Open","High","Low","Close","Volume"]:
@@ -58,14 +76,11 @@ def safe_download(symbol):
                         df[col] = pd.to_numeric(df[col], errors="coerce")
 
                 df.dropna(inplace=True)
-
                 return df
 
-            except:
-                time.sleep(1)
+            time.sleep(1)
 
-    # 🔥 SILENT FAIL (no spam logs)
-    return None
+    return None  # silent fail
 
 # ================= MARKET =================
 def market_return():
@@ -97,19 +112,15 @@ def generate_signal(stock, model, mkt_ret):
 
     score = 50
 
-    # relative strength
     if stock_ret > mkt_ret:
         score += 15
 
-    # volume spike (smart money)
     if latest["vol_ratio"] > 1.8:
         score += 15
 
-    # momentum
     if latest["momentum"] > 0:
         score += 10
 
-    # AI
     if model:
         X = pd.DataFrame(
             [[latest["ret"], latest["vol_ratio"], latest["momentum"]]],
@@ -148,7 +159,7 @@ def main():
         if sig:
             results.append(sig)
 
-        time.sleep(0.5)  # 🔥 avoid Yahoo blocking
+        time.sleep(0.6)  # safer delay
 
     if not results:
         send(f"⚠️ Market {trend} - No strong signals")
