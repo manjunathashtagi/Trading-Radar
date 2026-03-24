@@ -4,204 +4,129 @@ import numpy as np
 import os
 import requests
 import joblib
-from datetime import datetime
 
 # ================= CONFIG =================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 MODEL_FILE = "model.pkl"
 
 STOCKS = [
-    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC","LT",
-    "AXISBANK","KOTAKBANK","BHARTIARTL","ASIANPAINT","MARUTI","HCLTECH",
-    "WIPRO","ULTRACEMCO","TITAN","BAJFINANCE","NESTLEIND","POWERGRID",
-    "NTPC","ONGC","ADANIENT","ADANIPORTS","JSWSTEEL","TATASTEEL",
-    "HINDALCO","COALINDIA","DRREDDY","SUNPHARMA","CIPLA","DIVISLAB"
+    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
+    "LT","AXISBANK","KOTAKBANK","BHARTIARTL","MARUTI",
+    "TATASTEEL","JSWSTEEL","HINDALCO","ADANIENT",
+    "TATAMOTORS","INDIGO","ZOMATO"
 ]
 
-SECTOR_MAP = {
-    "INFY":"IT","TCS":"IT","HCLTECH":"IT","WIPRO":"IT",
-    "RELIANCE":"ENERGY","ONGC":"ENERGY","COALINDIA":"ENERGY",
-    "ICICIBANK":"BANK","HDFCBANK":"BANK","SBIN":"BANK","AXISBANK":"BANK",
-    "SUNPHARMA":"PHARMA","DRREDDY":"PHARMA","CIPLA":"PHARMA",
-}
-
 # ================= TELEGRAM =================
-def send_telegram(msg):
+def send(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
     except:
         pass
 
 # ================= FETCH =================
 def fetch(symbol):
+    ticker = symbol if symbol.startswith("^") else symbol + ".NS"
     try:
-        ticker = symbol if symbol.startswith("^") else symbol + ".NS"
-
         df = yf.download(ticker, period="5d", interval="15m")
-
         if df.empty:
             return df
 
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
+        df = df.apply(pd.to_numeric, errors="coerce")
         df.dropna(inplace=True)
         return df
-
-    except Exception as e:
-        print(f"Fetch error {symbol}: {e}")
+    except:
         return pd.DataFrame()
 
+# ================= MARKET =================
+def market_return():
+    df = fetch("^NSEI")
+    if df.empty:
+        return 0
+    return (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
+
 # ================= FEATURES =================
-def add_features(df):
+def features(df):
     df["ret"] = df["Close"].pct_change()
-    df["vol_spike"] = df["Volume"] / df["Volume"].rolling(20).mean()
-    df["ma20"] = df["Close"].rolling(20).mean()
-    df["ma50"] = df["Close"].rolling(50).mean()
-    df["momentum"] = df["Close"] - df["Close"].shift(10)
+    df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+    df["momentum"] = df["Close"] - df["Close"].shift(5)
     return df.dropna()
 
-# ================= MARKET TREND =================
-def market_trend():
-    df = fetch("^NSEI")
-
-    if df.empty:
-        return "NEUTRAL", "NEUTRAL"
-
-    close = df["Close"].iloc[-1]
-    open_ = df["Open"].iloc[0]
-
-    if close > open_:
-        return "BULLISH", "LONG"
-    elif close < open_:
-        return "BEARISH", "SHORT"
-    else:
-        return "NEUTRAL", "NEUTRAL"
-
-# ================= SECTOR STRENGTH =================
-def sector_strength():
-    scores = {}
-
-    for stock in STOCKS:
-        sector = SECTOR_MAP.get(stock)
-        if not sector:
-            continue
-
-        df = fetch(stock)
-        if df.empty:
-            continue
-
-        change = (df["Close"].iloc[-1] - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
-
-        scores.setdefault(sector, []).append(change)
-
-    strong = []
-    for sector, vals in scores.items():
-        if np.mean(vals) > 0:
-            strong.append(sector)
-
-    return strong
-
-# ================= AI MODEL =================
-def load_model():
-    if os.path.exists(MODEL_FILE):
-        model = joblib.load(MODEL_FILE)
-        print("✅ AI model loaded")
-        return model
-    return None
-
 # ================= SIGNAL =================
-def generate_signal(stock, df, model, market_bias, strong_sectors):
-    df = add_features(df)
-
-    if df.empty:
+def signal(stock, model, mkt_ret):
+    df = fetch(stock)
+    if df.empty or len(df) < 30:
         return None
 
+    df = features(df)
     latest = df.iloc[-1]
 
-    features = pd.DataFrame([[
-        latest["ret"],
-        latest["vol_spike"],
-        latest["momentum"]
-    ]], columns=["ret","vol_spike","momentum"])
+    stock_ret = (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
 
     score = 50
 
+    # RELATIVE STRENGTH (🔥 KEY FIX)
+    if stock_ret > mkt_ret:
+        score += 15
+
+    # VOLUME BURST
+    if latest["vol_ratio"] > 1.8:
+        score += 15
+
+    # MOMENTUM
+    if latest["momentum"] > 0:
+        score += 10
+
+    # AI
     if model:
-        score = model.predict_proba(features)[0][1] * 100
+        X = pd.DataFrame([[latest["ret"], latest["vol_ratio"], latest["momentum"]]],
+                         columns=["ret","vol_ratio","momentum"])
+        score += model.predict_proba(X)[0][1] * 20
 
-    # Boost logic
-    if SECTOR_MAP.get(stock) in strong_sectors:
-        score += 5
-
-    if market_bias == "LONG":
-        score += 5
-    elif market_bias == "SHORT":
-        score -= 5
-
-    # Smart money (volume spike)
-    if latest["vol_spike"] > 1.5:
-        score += 5
-
-    if score < 60:
+    if score < 65:
         return None
 
-    entry = latest["Close"]
-    sl = entry * 0.98
-    tp = entry * 1.04
+    price = latest["Close"]
 
     return {
         "stock": stock,
         "score": round(score,1),
-        "entry": round(entry,2),
-        "sl": round(sl,2),
-        "tp": round(tp,2)
+        "entry": round(price,2),
+        "sl": round(price*0.98,2),
+        "tp": round(price*1.05,2)
     }
-
-# ================= MAIN SCAN =================
-def run_scan():
-    model = load_model()
-
-    trend, bias = market_trend()
-    sectors = sector_strength()
-
-    print(f"Market: {trend}, Bias: {bias}, Strong sectors: {sectors}")
-
-    signals = []
-
-    for stock in STOCKS:
-        df = fetch(stock)
-        if df.empty:
-            continue
-
-        sig = generate_signal(stock, df, model, bias, sectors)
-        if sig:
-            signals.append(sig)
-
-    if not signals:
-        send_telegram(f"⚠️ Market {trend} - No strong signals")
-        print("No signals")
-        return
-
-    msg = f"🚨 SIGNALS\nMarket: {trend}\n\n"
-
-    for s in signals[:5]:
-        msg += (
-            f"{s['stock']} ({s['score']})\n"
-            f"Entry: {s['entry']} | SL: {s['sl']} | TP: {s['tp']}\n\n"
-        )
-
-    send_telegram(msg)
 
 # ================= MAIN =================
 def main():
-    run_scan()
+    model = joblib.load(MODEL_FILE) if os.path.exists(MODEL_FILE) else None
+
+    mkt_ret = market_return()
+    trend = "BULLISH" if mkt_ret > 0 else "BEARISH"
+
+    print(f"Market: {trend}")
+
+    results = []
+
+    for s in STOCKS:
+        sig = signal(s, model, mkt_ret)
+        if sig:
+            results.append(sig)
+
+    if not results:
+        send(f"⚠️ Market {trend} - No strong signals")
+        return
+
+    msg = f"🚀 SMART MONEY SIGNALS\nMarket: {trend}\n\n"
+
+    for r in results[:5]:
+        msg += f"{r['stock']} ({r['score']})\n"
+        msg += f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
+
+    send(msg)
 
 if __name__ == "__main__":
     main()
