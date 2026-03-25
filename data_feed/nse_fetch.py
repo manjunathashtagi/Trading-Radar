@@ -1,21 +1,21 @@
 import requests
 
-BASE_URL = "https://www.nseindia.com"
-
-
 def get_session():
     session = requests.Session()
 
     headers = {
         "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.nseindia.com/"
     }
 
     session.headers.update(headers)
 
-    # 🔥 NSE requires initial hit
-    session.get(BASE_URL)
+    # 🔥 Warm-up to avoid blocking
+    session.get("https://www.nseindia.com")
+    session.get("https://www.nseindia.com/market-data/live-equity-market")
 
     return session
 
@@ -29,13 +29,19 @@ def get_quote(session, symbol):
         if res.status_code != 200:
             return None
 
-        data = res.json()
+        try:
+            data = res.json()
+        except:
+            return None
+
+        if "priceInfo" not in data:
+            return None
 
         price = data["priceInfo"]["lastPrice"]
         open_price = data["priceInfo"]["open"]
         high = data["priceInfo"]["intraDayHighLow"]["max"]
 
-        volume = data["securityWiseDP"]["quantityTraded"]
+        volume = data.get("securityWiseDP", {}).get("quantityTraded", 0)
 
         return {
             "price": price,
@@ -44,6 +50,5 @@ def get_quote(session, symbol):
             "volume": volume
         }
 
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+    except:
         return None
