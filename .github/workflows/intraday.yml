@@ -48,7 +48,7 @@ jobs:
       # =========================
       - name: Run Stage-1 Builder
         run: |
-          python Scripts/stage1_builder.py || echo "Stage1 skipped"
+          python Scripts/build_market_training_data.py || echo "Stage1 skipped"
 
       # =========================
       # Intraday Sniper
