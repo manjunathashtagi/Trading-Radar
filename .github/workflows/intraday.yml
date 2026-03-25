@@ -1,53 +1,94 @@
-name: Intraday
+name: Trading Radar Full System
 
 on:
   schedule:
-    # ✅ Runs every 5 min from 09:15 to 15:30 IST
-    - cron: "*/5 3-10 * * 1-5"
-  
-  # ✅ Manual trigger (VERY IMPORTANT)
+    # 🧠 Stage 1 (Full NSE scan) → 9:05 AM IST
+    - cron: "35 3 * * 1-5"
+
+    # 🚀 Intraday Sniper → every 5 min (9:15–3:30 IST)
+    - cron: "45 3 * * 1-5"
+    - cron: "*/5 4-9 * * 1-5"
+
+    # 📊 EOD Report → 3:35 PM IST
+    - cron: "5 10 * * 1-5"
+
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  trading-system:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v3
+      # =========================
+      # Checkout
+      # =========================
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+      # =========================
+      # Python setup
+      # =========================
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: 📦 Install dependencies
+      # =========================
+      # Install dependencies
+      # =========================
+      - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install yfinance pandas numpy scikit-learn requests
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: 🚀 Run Intraday Script
+      # =========================
+      # Stage 1 (Full NSE Scan)
+      # =========================
+      - name: Run Stage-1 Builder
+        run: |
+          python Scripts/stage1_builder.py || echo "Stage1 skipped"
+
+      # =========================
+      # Intraday Sniper
+      # =========================
+      - name: Run Intraday Sniper
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python Scripts/run_intraday.py
+          python Scripts/run_intraday.py || echo "Intraday skipped"
 
-      # ✅ FIXED PUSH ISSUE (VERY IMPORTANT)
-      - name: 💾 Commit & Push Data
+      # =========================
+      # EOD Report
+      # =========================
+      - name: Run EOD Report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python Scripts/run_eod.py || echo "EOD skipped"
+
+      # =========================
+      # Commit & Push (FIXED)
+      # =========================
+      - name: Commit data safely
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      # ✅ Stage changes FIRST
-          git add data/signals.csv || true
-          git add data/alerted_today.csv || true
+          # Add files
+          git add data/*.csv || true
 
-      # ✅ Commit FIRST
-          git commit -m "Auto update signals" || echo "No changes"
+          # Skip if no changes
+          git diff --quiet && echo "No changes" && exit 0
 
-      # ✅ THEN pull (safe)
+          # Commit
+          git commit -m "Auto update trading data"
+
+          # Pull safely
           git pull origin main --rebase || true
 
-      # ✅ Push
+          # Push
           git push origin main
