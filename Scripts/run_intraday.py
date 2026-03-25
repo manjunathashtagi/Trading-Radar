@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 import pytz
 
-# ✅ FIX: ADD PROJECT ROOT PATH
+# ✅ FIX IMPORT PATH
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -17,6 +17,9 @@ STAGE1_FILE = "data/stage1_cache.csv"
 ALERT_FILE = "data/alerted_today.csv"
 
 
+# =========================
+# Load alerted stocks
+# =========================
 def load_alerted():
     if not os.path.exists(ALERT_FILE):
         return set()
@@ -29,7 +32,12 @@ def load_alerted():
     return set(df["stock"].dropna().tolist())
 
 
+# =========================
+# Save alerted stock
+# =========================
 def save_alert(stock):
+    os.makedirs("data", exist_ok=True)
+
     df = pd.DataFrame([{"stock": stock}])
 
     if os.path.exists(ALERT_FILE):
@@ -38,6 +46,9 @@ def save_alert(stock):
         df.to_csv(ALERT_FILE, index=False)
 
 
+# =========================
+# MAIN ENGINE
+# =========================
 def main():
 
     if not os.path.exists(STAGE1_FILE):
@@ -51,6 +62,9 @@ def main():
         return
 
     symbols = df["symbol"].dropna().tolist()
+
+    # 🔥 LIMIT (VERY IMPORTANT)
+    symbols = symbols[:300]
 
     alerted = load_alerted()
 
@@ -76,11 +90,13 @@ def main():
         high = data["high"]
         volume = data["volume"]
 
+        # =========================
         # 🚀 OPENING BLAST LOGIC
+        # =========================
         breakout = price > open_price * 1.01 and price >= high
 
-        # 🔥 SMART MONEY (volume proxy)
-        volume_spike = volume and volume > 1.5
+        # 🔥 Volume spike (basic proxy)
+        volume_spike = volume and volume > 100000
 
         if breakout and volume_spike:
 
@@ -89,7 +105,7 @@ def main():
             tp = price * 1.03
 
             msg = (
-                f"🚀 NSE BLAST SIGNAL\n\n"
+                f"🚀 <b>NSE BLAST SIGNAL</b>\n\n"
                 f"{stock}\n"
                 f"Entry: {round(entry,2)}\n"
                 f"SL: {round(sl,2)}\n"
@@ -101,7 +117,8 @@ def main():
 
             signals.append(stock)
 
-        time.sleep(0.2)
+        # 🔥 RATE LIMIT FIX
+        time.sleep(0.8)
 
     print(f"✅ Signals found: {len(signals)}")
 
