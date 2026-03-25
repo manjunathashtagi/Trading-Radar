@@ -1,8 +1,8 @@
-name: Daily NSE Stage-1 Builder
+name: Stage1 Builder
 
 on:
   schedule:
-    - cron: "30 3 * * 1-5"   # Start earlier (buffer)
+    - cron: "35 3 * * 1-5"   # 09:05 IST
   workflow_dispatch:
 
 jobs:
@@ -10,72 +10,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
+      - uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: 📦 Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      # 🔥 TIME CONTROL FIX (CRITICAL)
-      - name: ⏰ Wait until 09:15 IST
-        run: |
-          python - << 'EOF'
-          import time
-          from datetime import datetime
-          import pytz
+      - run: python Scripts/stage1_builder.py
 
-          tz = pytz.timezone("Asia/Kolkata")
-
-          while True:
-              now = datetime.now(tz)
-              if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
-                  print("✅ Time reached, starting scan...")
-                  break
-              print(f"⏳ Waiting... Current time: {now}")
-              time.sleep(30)
-          EOF
-
-      - name: 🚀 Run Stage-1 Scan
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - << 'EOF'
-          from data_feed.nse_universe import get_all_nse_symbols
-          from data_feed.stage1_filter import stage1_shortlist
-          from alerts.telegram_alerts import send_alert
-          from datetime import date
-
-          universe = get_all_nse_symbols()
-          stage1 = stage1_shortlist(universe)
-
-          send_alert(
-              f"🌅 <b>Pre-Market Scan Ready</b>\n"
-              f"Scanned: {len(universe)}\n"
-              f"Qualified: {len(stage1)}\n"
-              f"Date: {date.today()}"
-          )
-          EOF
-
-      # ✅ FIX PUSH ERROR ALSO
-      - name: Commit Stage-1 Cache
-        run: |
+      - run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add data/stage1_cache.csv
+          git add data/stage1_cache.csv || true
+          git commit -m "Stage1 update" || echo "No changes"
 
-          git commit -m "Auto: update Stage-1 cache" || echo "No changes"
-
-          git pull origin main --rebase
-
+          git pull origin main --rebase || true
           git push origin main
