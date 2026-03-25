@@ -39,11 +39,15 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git pull origin main --rebase
-
+      # ✅ Stage changes FIRST
           git add data/signals.csv || true
           git add data/alerted_today.csv || true
 
+      # ✅ Commit FIRST
           git commit -m "Auto update signals" || echo "No changes"
 
+      # ✅ THEN pull (safe)
+          git pull origin main --rebase || true
+
+      # ✅ Push
           git push origin main
