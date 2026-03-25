@@ -1,63 +1,60 @@
 import os
+import sys
 import pandas as pd
-import yfinance as yf
 import time
 from datetime import datetime
 import pytz
 
+# ✅ FIX: ADD PROJECT ROOT PATH
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from alerts.telegram_alerts import send_alert
+from data_feed.nse_fetch import get_session, get_quote
 
-ALERTED_FILE = "data/alerted_today.csv"
-SIGNALS_FILE = "data/signals.csv"
 STAGE1_FILE = "data/stage1_cache.csv"
-
-
-def safe_fetch(symbol):
-    for _ in range(3):
-        try:
-            df = yf.download(symbol, period="5d", interval="5m", progress=False)
-            if not df.empty:
-                return df
-        except:
-            time.sleep(1)
-    return None
+ALERT_FILE = "data/alerted_today.csv"
 
 
 def load_alerted():
-    if not os.path.exists(ALERTED_FILE):
+    if not os.path.exists(ALERT_FILE):
         return set()
 
-    df = pd.read_csv(ALERTED_FILE)
+    df = pd.read_csv(ALERT_FILE)
 
     if "stock" not in df.columns:
         return set()
 
-    return set(df["stock"].tolist())
+    return set(df["stock"].dropna().tolist())
 
 
 def save_alert(stock):
     df = pd.DataFrame([{"stock": stock}])
-    if os.path.exists(ALERTED_FILE):
-        df.to_csv(ALERTED_FILE, mode="a", header=False, index=False)
+
+    if os.path.exists(ALERT_FILE):
+        df.to_csv(ALERT_FILE, mode="a", header=False, index=False)
     else:
-        df.to_csv(ALERTED_FILE, index=False)
+        df.to_csv(ALERT_FILE, index=False)
 
 
 def main():
 
     if not os.path.exists(STAGE1_FILE):
-        print("No stage1 cache")
+        print("❌ No stage1 cache")
         return
 
-    df_stage1 = pd.read_csv(STAGE1_FILE)
+    df = pd.read_csv(STAGE1_FILE)
 
-    symbols = (
-        df_stage1["symbol"].tolist()
-        if "symbol" in df_stage1.columns
-        else df_stage1["stock"].tolist()
-    )
+    if "symbol" not in df.columns:
+        print("❌ Invalid stage1 file")
+        return
+
+    symbols = df["symbol"].dropna().tolist()
 
     alerted = load_alerted()
+
+    session = get_session()
 
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
@@ -69,27 +66,30 @@ def main():
         if stock in alerted:
             continue
 
-        df = safe_fetch(stock + ".NS")
+        data = get_quote(session, stock)
 
-        if df is None or len(df) < 20:
+        if not data:
             continue
 
-        df["EMA20"] = df["Close"].ewm(span=20).mean()
+        price = data["price"]
+        open_price = data["open"]
+        high = data["high"]
+        volume = data["volume"]
 
-        latest = df.iloc[-1]
+        # 🚀 OPENING BLAST LOGIC
+        breakout = price > open_price * 1.01 and price >= high
 
-        price = latest["Close"]
-        ema = latest["EMA20"]
+        # 🔥 SMART MONEY (volume proxy)
+        volume_spike = volume and volume > 1.5
 
-        # 🚀 EARLY MOMENTUM LOGIC
-        if price > ema:
+        if breakout and volume_spike:
 
             entry = price
-            sl = price * 0.98
+            sl = price * 0.985
             tp = price * 1.03
 
             msg = (
-                f"🚀 OPENING BLAST SIGNAL\n\n"
+                f"🚀 NSE BLAST SIGNAL\n\n"
                 f"{stock}\n"
                 f"Entry: {round(entry,2)}\n"
                 f"SL: {round(sl,2)}\n"
@@ -97,28 +97,13 @@ def main():
             )
 
             send_alert(msg)
-
             save_alert(stock)
 
-            signals.append({
-                "symbol": stock,
-                "action": "BUY",
-                "entry": entry,
-                "sl": sl,
-                "tp": tp,
-                "date": now.date(),
-                "trigger_time": now.strftime("%H:%M:%S")
-            })
+            signals.append(stock)
 
-        time.sleep(0.3)
+        time.sleep(0.2)
 
-    if signals:
-        df_new = pd.DataFrame(signals)
-
-        if os.path.exists(SIGNALS_FILE):
-            df_new.to_csv(SIGNALS_FILE, mode="a", header=False, index=False)
-        else:
-            df_new.to_csv(SIGNALS_FILE, index=False)
+    print(f"✅ Signals found: {len(signals)}")
 
 
 if __name__ == "__main__":
