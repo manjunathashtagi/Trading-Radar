@@ -1,8 +1,8 @@
-name: End Of Day Report
+name: EOD Report
 
 on:
   schedule:
-    - cron: "30 10 * * 1-5"   # 16:00 IST
+    - cron: "0 10 * * 1-5"   # 15:30 IST
   workflow_dispatch:
 
 jobs:
@@ -18,16 +18,8 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Run EOD Report
+      - name: Run EOD
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Scripts/eod_report.py
-
-      - name: Commit Updated Results
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add data/signals.csv
-          git commit -m "Auto: update EOD results" || echo "No changes"
-          git push
+        run: python Scripts/run_eod.py
