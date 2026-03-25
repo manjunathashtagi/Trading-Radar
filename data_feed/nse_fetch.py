@@ -1,34 +1,49 @@
-from nsepython import equity_history
-from datetime import datetime, timedelta
-import pandas as pd
+import requests
 
-def fetch_nse_ohlc(symbol: str):
+BASE_URL = "https://www.nseindia.com"
+
+
+def get_session():
+    session = requests.Session()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+    }
+
+    session.headers.update(headers)
+
+    # 🔥 NSE requires initial hit
+    session.get(BASE_URL)
+
+    return session
+
+
+def get_quote(session, symbol):
     try:
-        to_date = datetime.now()
-        from_date = to_date - timedelta(days=7)
+        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
 
-        df = equity_history(
-            symbol=symbol,
-            series="EQ",
-            start_date=from_date.strftime("%d-%m-%Y"),
-            end_date=to_date.strftime("%d-%m-%Y")
-        )
+        res = session.get(url, timeout=5)
 
-        if df is None or df.empty:
-            return pd.DataFrame()
+        if res.status_code != 200:
+            return None
 
-        df["DATETIME"] = pd.to_datetime(df["TIMESTAMP"] + " " + df["TIME"])
-        df = df.sort_values("DATETIME")
+        data = res.json()
 
-        df = df.rename(columns={
-            "OPEN": "open",
-            "HIGH": "high",
-            "LOW": "low",
-            "CLOSE": "close",
-            "VOLUME": "volume"
-        })
+        price = data["priceInfo"]["lastPrice"]
+        open_price = data["priceInfo"]["open"]
+        high = data["priceInfo"]["intraDayHighLow"]["max"]
 
-        return df[["open", "high", "low", "close", "volume"]]
+        volume = data["securityWiseDP"]["quantityTraded"]
 
-    except Exception:
-        return pd.DataFrame()
+        return {
+            "price": price,
+            "open": open_price,
+            "high": high,
+            "volume": volume
+        }
+
+    except Exception as e:
+        print(f"Error fetching {symbol}: {e}")
+        return None
