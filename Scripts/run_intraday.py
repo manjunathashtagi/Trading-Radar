@@ -69,21 +69,30 @@ def save_signal(data):
 # ================= FETCH (FIXED) =================
 def fetch(stock):
     try:
-        stock = stock.strip().upper()
+        import sys
+        import os
+
+        # 🔥 BLOCK YAHOO PRINTS
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
 
         df = yf.download(
-            stock + ".NS",
+            stock.strip().upper() + ".NS",
             period="1d",
             interval="5m",
             progress=False,
-            threads=False  # 🔥 important fix
+            threads=False
         )
 
-        # 🔥 HARD FILTER (kills Yahoo noise)
-        if df is None or df.empty:
-            return None
+        # 🔥 RESTORE OUTPUT
+        sys.stdout.close()
+        sys.stderr.close()
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
-        if len(df) < 10:
+        if df is None or df.empty or len(df) < 10:
             return None
 
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
@@ -95,7 +104,10 @@ def fetch(stock):
         return df.dropna()
 
     except:
-        return None  # 🔥 NO PRINT → clean logs
+        # restore in case of crash
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        return None
 
 # ================= SNIPER LOGIC =================
 def sniper_signal(stock):
