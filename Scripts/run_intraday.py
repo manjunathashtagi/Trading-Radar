@@ -71,32 +71,31 @@ def fetch(stock):
     try:
         stock = stock.strip().upper()
 
-        df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
+        df = yf.download(
+            stock + ".NS",
+            period="1d",
+            interval="5m",
+            progress=False,
+            threads=False  # 🔥 important fix
+        )
 
-        # 🔥 Retry once (Yahoo unstable)
+        # 🔥 HARD FILTER (kills Yahoo noise)
         if df is None or df.empty:
-            time.sleep(1)
-            df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
-
-        if df is None or df.empty:
-            print(f"⚠️ Skipping {stock}")
             return None
 
-        # 🔥 Flatten columns
+        if len(df) < 10:
+            return None
+
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-        # 🔥 Ensure required columns
         required = ["Open","High","Low","Close","Volume"]
         if not all(col in df.columns for col in required):
             return None
 
-        df = df.dropna()
+        return df.dropna()
 
-        return df
-
-    except Exception as e:
-        print(f"❌ Error {stock}: {e}")
-        return None
+    except:
+        return None  # 🔥 NO PRINT → clean logs
 
 # ================= SNIPER LOGIC =================
 def sniper_signal(stock):
