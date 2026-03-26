@@ -1,127 +1,162 @@
-import os
-import sys
+import yfinance as yf
 import pandas as pd
+import os
+import requests
 import time
 from datetime import datetime
-import pytz
 
-# ✅ FIX IMPORT PATH
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# ================= CONFIG =================
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-from alerts.telegram_alerts import send_alert
-from data_feed.nse_fetch import get_session, get_quote
+DATA_DIR = "data"
+ALERT_FILE = f"{DATA_DIR}/alerted_today.csv"
+SIGNAL_FILE = f"{DATA_DIR}/signals.csv"
 
-STAGE1_FILE = "data/stage1_cache.csv"
-ALERT_FILE = "data/alerted_today.csv"
+STOCKS = [
+    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
+    "LT","AXISBANK","KOTAKBANK","BHARTIARTL","MARUTI",
+    "TATASTEEL","JSWSTEEL","HINDALCO","ADANIENT",
+    "TATAMOTORS","INDIGO","ZOMATO","SHRIRAMFIN"
+]
 
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# =========================
-# Load alerted stocks
-# =========================
+# ================= TELEGRAM =================
+def send(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except:
+        pass
+
+# ================= ALERT MEMORY =================
 def load_alerted():
     if not os.path.exists(ALERT_FILE):
         return set()
-
     df = pd.read_csv(ALERT_FILE)
+    today = str(datetime.now().date())
+    return set(df[df["date"] == today]["stock"].tolist())
 
-    if "stock" not in df.columns:
-        return set()
-
-    return set(df["stock"].dropna().tolist())
-
-
-# =========================
-# Save alerted stock
-# =========================
 def save_alert(stock):
-    os.makedirs("data", exist_ok=True)
-
-    df = pd.DataFrame([{"stock": stock}])
-
+    today = str(datetime.now().date())
+    df = pd.DataFrame([[stock, today]], columns=["stock","date"])
     if os.path.exists(ALERT_FILE):
         df.to_csv(ALERT_FILE, mode="a", header=False, index=False)
     else:
         df.to_csv(ALERT_FILE, index=False)
 
+# ================= SAVE SIGNAL =================
+def save_signal(data):
+    df = pd.DataFrame([data])
+    if os.path.exists(SIGNAL_FILE):
+        df.to_csv(SIGNAL_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(SIGNAL_FILE, index=False)
 
-# =========================
-# MAIN ENGINE
-# =========================
+# ================= FETCH =================
+def fetch(stock):
+    try:
+        df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
+        if df is not None and not df.empty:
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            return df
+    except:
+        return None
+
+# ================= SNIPER LOGIC =================
+def sniper_signal(stock):
+    df = fetch(stock)
+
+    if df is None or len(df) < 10:
+        return None
+
+    df = df.copy()
+
+    # recent candles
+    recent = df.iloc[-6:]
+
+    high_range = recent["High"].max()
+    low_range = recent["Low"].min()
+
+    range_pct = (high_range - low_range) / low_range
+
+    # 🔥 Tight range (coil)
+    tight_range = range_pct < 0.01
+
+    # 🔥 Higher lows (accumulation)
+    higher_lows = all(recent["Low"].diff().dropna() > -0.1)
+
+    # 🔥 Volume build-up
+    avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
+    recent_vol = recent["Volume"].mean()
+    volume_build = recent_vol > avg_vol * 1.5
+
+    # 🔥 Early breakout pressure
+    last_price = df["Close"].iloc[-1]
+    near_high = last_price > (high_range * 0.995)
+
+    score = 0
+
+    if tight_range: score += 25
+    if higher_lows: score += 25
+    if volume_build: score += 25
+    if near_high: score += 25
+
+    if score < 70:
+        return None
+
+    entry = last_price
+    sl = low_range
+    tp = entry + (entry - sl) * 1.5
+
+    return {
+        "stock": stock,
+        "score": score,
+        "entry": round(entry,2),
+        "sl": round(sl,2),
+        "tp": round(tp,2),
+        "time": datetime.now().strftime("%H:%M")
+    }
+
+# ================= MAIN =================
 def main():
-
-    if not os.path.exists(STAGE1_FILE):
-        print("❌ No stage1 cache")
-        return
-
-    df = pd.read_csv(STAGE1_FILE)
-
-    if "symbol" not in df.columns:
-        print("❌ Invalid stage1 file")
-        return
-
-    symbols = df["symbol"].dropna().tolist()
-
-    # 🔥 LIMIT (VERY IMPORTANT)
-    symbols = symbols[:300]
-
     alerted = load_alerted()
+    results = []
 
-    session = get_session()
+    for stock in STOCKS:
+        try:
+            sig = sniper_signal(stock)
 
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
+            if sig and stock not in alerted:
+                results.append(sig)
 
-    signals = []
+                save_alert(stock)
+                save_signal(sig)
 
-    for stock in symbols:
-
-        if stock in alerted:
+            time.sleep(0.5)
+        except:
             continue
 
-        data = get_quote(session, stock)
+    if not results:
+        return
 
-        if not data:
-            continue
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
 
-        price = data["price"]
-        open_price = data["open"]
-        high = data["high"]
-        volume = data["volume"]
+    msg = "🎯 SNIPER MODE PRO++\n\n"
 
-        # =========================
-        # 🚀 OPENING BLAST LOGIC
-        # =========================
-        breakout = price > open_price * 1.01 and price >= high
+    for r in results:
+        msg += (
+            f"{r['stock']} ({r['score']})\n"
+            f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n"
+            f"Time: {r['time']}\n\n"
+        )
 
-        # 🔥 Volume spike (basic proxy)
-        volume_spike = volume and volume > 100000
+    msg += "⚡ Early Entry BEFORE Breakout"
 
-        if breakout and volume_spike:
-
-            entry = price
-            sl = price * 0.985
-            tp = price * 1.03
-
-            msg = (
-                f"🚀 <b>NSE BLAST SIGNAL</b>\n\n"
-                f"{stock}\n"
-                f"Entry: {round(entry,2)}\n"
-                f"SL: {round(sl,2)}\n"
-                f"TP: {round(tp,2)}"
-            )
-
-            send_alert(msg)
-            save_alert(stock)
-
-            signals.append(stock)
-
-        # 🔥 RATE LIMIT FIX
-        time.sleep(0.8)
-
-    print(f"✅ Signals found: {len(signals)}")
-
+    send(msg)
 
 if __name__ == "__main__":
     main()
