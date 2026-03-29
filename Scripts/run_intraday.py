@@ -124,31 +124,37 @@ def sniper(stock):
     if df is None:
         return None
 
-    # TREND
+    # ================= FEATURES =================
     ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
     last = df["Close"].iloc[-1]
 
-    trend = last > ema20
+    trend_strength = (last - ema20) / ema20
 
-    # BREAKOUT
     recent = df.iloc[-6:]
     high = recent["High"].max()
     low = recent["Low"].min()
 
-    breakout = last > high
+    breakout_strength = (last - high) / high
 
-    # VOLUME
     avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
     vol = df["Volume"].iloc[-1]
 
-    volume = vol > avg_vol * 2
+    volume_strength = vol / avg_vol
 
-    # MOMENTUM
-    momentum = last > df["Close"].iloc[-5]
+    momentum_strength = (last - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
 
-    if not (trend and breakout and volume and momentum):
+    # ================= AI SCORE =================
+    score = 0
+
+    if trend_strength > 0: score += 25
+    if breakout_strength > 0.002: score += 25
+    if volume_strength > 1.5: score += 25
+    if momentum_strength > 0.003: score += 25
+
+    if score < 70:
         return None
 
+    # ================= TRADE =================
     entry = last
     sl = low
     tp = entry + (entry - sl) * 1.8
@@ -158,7 +164,10 @@ def sniper(stock):
         "entry": round(entry,2),
         "sl": round(sl,2),
         "tp": round(tp,2),
-        "time": datetime.now().strftime("%H:%M")
+        "score": score,
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "date": str(datetime.now().date()),
+        "result": "OPEN"
     }
 
 # ================= MAIN =================
