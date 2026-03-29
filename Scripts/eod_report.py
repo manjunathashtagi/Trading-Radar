@@ -27,43 +27,33 @@ def check_result(row):
 
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-        entry = row["entry"]
-        sl = row["sl"]
-        tp = row["tp"]
-
         for _, r in df.iterrows():
-            if r["High"] >= tp:
+            if r["High"] >= row["tp"]:
                 return "TARGET"
-            if r["Low"] <= sl:
+            if r["Low"] <= row["sl"]:
                 return "SL"
 
         return "OPEN"
-
     except:
         return "OPEN"
 
 def main():
 
     if not os.path.exists(SIGNAL_FILE):
-        print("No signals")
         return
 
     df = pd.read_csv(SIGNAL_FILE)
 
     today = str(datetime.now().date())
-
     df_today = df[df["date"] == today]
 
     if df_today.empty:
-        send("📊 EOD REPORT\nNo trades today")
+        send("📊 No trades today")
         return
 
-    wins = 0
-    losses = 0
-    open_trades = 0
+    wins, losses, open_trades = 0,0,0
 
     for i, row in df_today.iterrows():
-
         result = check_result(row)
         df.loc[i, "result"] = result
 
@@ -75,20 +65,18 @@ def main():
             open_trades += 1
 
     total = len(df_today)
-    winrate = round((wins / total) * 100, 2) if total > 0 else 0
+    winrate = round((wins/total)*100,2) if total else 0
 
     df.to_csv(SIGNAL_FILE, index=False)
 
-    msg = (
-        f"📊 EOD PERFORMANCE\n\n"
+    send(
+        f"📊 EOD REPORT\n\n"
         f"Trades: {total}\n"
-        f"🎯 Wins: {wins}\n"
-        f"❌ Loss: {losses}\n"
-        f"⏳ Open: {open_trades}\n"
-        f"Win Rate: {winrate}%"
+        f"Wins: {wins}\n"
+        f"Loss: {losses}\n"
+        f"Open: {open_trades}\n"
+        f"Winrate: {winrate}%"
     )
-
-    send(msg)
 
 if __name__ == "__main__":
     main()
