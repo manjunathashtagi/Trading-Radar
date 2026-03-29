@@ -1,0 +1,6 @@
+{
+  "trend_min": 0,
+  "breakout_min": 0.002,
+  "volume_min": 1.5,
+  "momentum_min": 0.003
+}
