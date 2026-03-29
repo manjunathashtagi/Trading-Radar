@@ -13,13 +13,6 @@ DATA_DIR = "data"
 ALERT_FILE = f"{DATA_DIR}/alerted_today.csv"
 SIGNAL_FILE = f"{DATA_DIR}/signals.csv"
 
-STOCKS = [
-    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
-    "LT","AXISBANK","KOTAKBANK","BHARTIARTL","MARUTI",
-    "TATASTEEL","JSWSTEEL","HINDALCO","ADANIENT",
-    "TATAMOTORS","INDIGO","ZOMATO","SHRIRAMFIN"
-]
-
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ================= TELEGRAM =================
@@ -27,11 +20,21 @@ def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=5
+            data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
-        print("❌ Telegram failed")
+        pass
+
+# ================= NSE UNIVERSE =================
+def get_nse_universe():
+    try:
+        df = pd.read_csv(
+            "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        )
+        symbols = df["SYMBOL"].dropna().tolist()
+        return symbols
+    except:
+        return []
 
 # ================= ALERT MEMORY =================
 def load_alerted():
@@ -49,7 +52,6 @@ def load_alerted():
 
 def save_alert(stock):
     today = str(datetime.now().date())
-
     df = pd.DataFrame([[stock, today]], columns=["stock","date"])
 
     if os.path.exists(ALERT_FILE):
@@ -66,145 +68,146 @@ def save_signal(data):
     else:
         df.to_csv(SIGNAL_FILE, index=False)
 
-# ================= FETCH (FIXED) =================
+# ================= FETCH =================
 def fetch(stock):
     try:
-        import sys
-        import os
-
-        # 🔥 BLOCK YAHOO PRINTS
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
-
         df = yf.download(
-            stock.strip().upper() + ".NS",
+            stock + ".NS",
             period="1d",
             interval="5m",
-            progress=False,
-            threads=False
+            progress=False
         )
 
-        # 🔥 RESTORE OUTPUT
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-
-        if df is None or df.empty or len(df) < 10:
+        if df is None or df.empty:
             return None
 
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        df = df.dropna()
 
-        required = ["Open","High","Low","Close","Volume"]
-        if not all(col in df.columns for col in required):
+        if len(df) < 30:
             return None
 
-        return df.dropna()
+        return df
 
     except:
-        # restore in case of crash
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
         return None
+
+# ================= SECTOR MOMENTUM =================
+def get_top_movers(symbols):
+    movers = []
+
+    for stock in symbols[:300]:  # limit for speed
+        try:
+            df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
+
+            if df is None or df.empty:
+                continue
+
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+            change = (df["Close"].iloc[-1] - df["Open"].iloc[0]) / df["Open"].iloc[0]
+
+            if change > 0.02:  # 2% movers
+                movers.append((stock, change))
+
+        except:
+            continue
+
+    movers = sorted(movers, key=lambda x: x[1], reverse=True)
+
+    return [m[0] for m in movers[:30]]  # top 30
 
 # ================= SNIPER LOGIC =================
-def sniper_signal(stock):
+def sniper(stock):
     df = fetch(stock)
 
-    if df is None or len(df) < 20:
+    if df is None:
         return None
 
-    df = df.copy()
+    # TREND
+    ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
+    last = df["Close"].iloc[-1]
 
+    trend = last > ema20
+
+    # BREAKOUT
     recent = df.iloc[-6:]
+    high = recent["High"].max()
+    low = recent["Low"].min()
 
-    high_range = recent["High"].max()
-    low_range = recent["Low"].min()
+    breakout = last > high
 
-    range_pct = (high_range - low_range) / low_range
-
-    # 🔥 Tight range (coil)
-    tight_range = range_pct < 0.01
-
-    # 🔥 Higher lows (accumulation)
-    higher_lows = all(recent["Low"].diff().dropna() > -0.05)
-
-    # 🔥 Volume build-up (IMPROVED)
+    # VOLUME
     avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
-    recent_vol = recent["Volume"].mean()
-    volume_build = recent_vol > avg_vol * 1.8
+    vol = df["Volume"].iloc[-1]
 
-    # 🔥 Pressure near breakout
-    last_price = df["Close"].iloc[-1]
-    near_high = last_price > (high_range * 0.996)
+    volume = vol > avg_vol * 2
 
-    score = 0
-    if tight_range: score += 25
-    if higher_lows: score += 25
-    if volume_build: score += 25
-    if near_high: score += 25
+    # MOMENTUM
+    momentum = last > df["Close"].iloc[-5]
 
-    if score < 70:
+    if not (trend and breakout and volume and momentum):
         return None
 
-    entry = last_price
-    sl = low_range
-    tp = entry + (entry - sl) * 1.5
+    entry = last
+    sl = low
+    tp = entry + (entry - sl) * 1.8
 
     return {
         "stock": stock,
-        "score": score,
         "entry": round(entry,2),
         "sl": round(sl,2),
         "tp": round(tp,2),
-        "time": datetime.now().strftime("%H:%M"),
-        "date": str(datetime.now().date())
+        "time": datetime.now().strftime("%H:%M")
     }
 
 # ================= MAIN =================
 def main():
 
-    # 🔥 Ensure files exist (fix Git errors)
-    if not os.path.exists(ALERT_FILE):
-        pd.DataFrame(columns=["stock","date"]).to_csv(ALERT_FILE, index=False)
+    universe = get_nse_universe()
 
-    alerted = load_alerted()
-    results = []
-
-    for stock in STOCKS:
-        try:
-            sig = sniper_signal(stock)
-
-            if sig and stock not in alerted:
-                results.append(sig)
-
-                save_alert(stock)
-                save_signal(sig)
-
-            time.sleep(0.7)  # 🔥 rate limit
-
-        except Exception as e:
-            print(f"Loop error {stock}: {e}")
-            continue
-
-    if not results:
-        print("⚠️ No signals")
+    if not universe:
+        print("❌ NSE load failed")
         return
 
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    alerted = load_alerted()
 
-    msg = "🎯 <b>SNIPER MODE PRO++</b>\n\n"
+    # 🚀 Step 1: Find leaders
+    leaders = get_top_movers(universe)
+
+    print(f"🔥 Leaders found: {len(leaders)}")
+
+    results = []
+
+    # 🚀 Step 2: Apply sniper only on leaders
+    for stock in leaders:
+
+        if stock in alerted:
+            continue
+
+        sig = sniper(stock)
+
+        if sig:
+            results.append(sig)
+            save_alert(stock)
+            save_signal(sig)
+
+        time.sleep(0.3)
+
+    if not results:
+        print("⚠️ No institutional signals")
+        return
+
+    msg = "🏦 HEDGE FUND MODE SIGNALS\n\n"
 
     for r in results:
         msg += (
-            f"{r['stock']} ({r['score']})\n"
+            f"{r['stock']}\n"
             f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n"
             f"Time: {r['time']}\n\n"
         )
 
-    msg += "⚡ Early Entry BEFORE Breakout"
+    msg += "🔥 Top Momentum + Breakout + Volume"
 
     send(msg)
 
