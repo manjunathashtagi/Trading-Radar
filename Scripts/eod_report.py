@@ -1,108 +1,94 @@
-import os
 import pandas as pd
 import yfinance as yf
+import os
 from datetime import datetime
-import pytz
+import requests
 
-from alerts.telegram_alerts import send_alert
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-SIGNALS_FILE = "data/signals.csv"
+SIGNAL_FILE = "data/signals.csv"
 
+def send(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except:
+        pass
 
-def safe_fetch(symbol):
-    import time
-    for _ in range(3):
-        try:
-            df = yf.download(symbol, period="5d", interval="15m", progress=False)
-            if not df.empty:
-                return df
-        except:
-            time.sleep(1)
-    return None
+def check_result(row):
+    try:
+        df = yf.download(row["stock"] + ".NS", period="1d", interval="5m", progress=False)
 
+        if df.empty:
+            return "OPEN"
 
-def evaluate_trade(symbol, action, entry, sl, tp, trigger_dt):
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
 
-    df = safe_fetch(symbol + ".NS")
+        entry = row["entry"]
+        sl = row["sl"]
+        tp = row["tp"]
 
-    if df is None or df.empty:
-        return "⏳ OPEN"
+        for _, r in df.iterrows():
+            if r["High"] >= tp:
+                return "TARGET"
+            if r["Low"] <= sl:
+                return "SL"
 
-    df = df[df.index >= trigger_dt]
+        return "OPEN"
 
-    for _, row in df.iterrows():
-        high = row["High"]
-        low = row["Low"]
-
-        if action == "BUY":
-            if high >= tp:
-                return "🎯 TARGET HIT"
-            if low <= sl:
-                return "❌ SL HIT"
-
-    return "⏳ OPEN"
-
+    except:
+        return "OPEN"
 
 def main():
 
-    if not os.path.exists(SIGNALS_FILE):
-        send_alert("📊 EOD REPORT\nNo signals file.")
+    if not os.path.exists(SIGNAL_FILE):
+        print("No signals")
         return
 
-    df = pd.read_csv(SIGNALS_FILE)
+    df = pd.read_csv(SIGNAL_FILE)
 
-    if df.empty:
-        send_alert("📊 EOD REPORT\nNo trades today.")
+    today = str(datetime.now().date())
+
+    df_today = df[df["date"] == today]
+
+    if df_today.empty:
+        send("📊 EOD REPORT\nNo trades today")
         return
 
-    ist = pytz.timezone("Asia/Kolkata")
-    today = datetime.now(ist).date()
+    wins = 0
+    losses = 0
+    open_trades = 0
 
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    today_df = df[df["date"] == today]
+    for i, row in df_today.iterrows():
 
-    if today_df.empty:
-        send_alert("📊 EOD REPORT\nNo trades today.")
-        return
+        result = check_result(row)
+        df.loc[i, "result"] = result
 
-    wins, losses = 0, 0
-
-    message = f"📊 EOD REPORT\nDate: {today}\n\n"
-
-    for _, row in today_df.iterrows():
-
-        symbol = row["symbol"]
-
-        trigger_dt = datetime.combine(
-            today,
-            datetime.strptime(row["trigger_time"], "%H:%M:%S").time()
-        )
-
-        trigger_dt = ist.localize(trigger_dt)
-
-        result = evaluate_trade(
-            symbol,
-            row["action"],
-            row["entry"],
-            row["sl"],
-            row["tp"],
-            trigger_dt
-        )
-
-        if result == "🎯 TARGET HIT":
+        if result == "TARGET":
             wins += 1
-        elif result == "❌ SL HIT":
+        elif result == "SL":
             losses += 1
+        else:
+            open_trades += 1
 
-        message += f"{symbol} → {result}\n"
+    total = len(df_today)
+    winrate = round((wins / total) * 100, 2) if total > 0 else 0
 
-    total = len(today_df)
-    winrate = round((wins / total) * 100, 2) if total else 0
+    df.to_csv(SIGNAL_FILE, index=False)
 
-    message += f"\nTotal: {total}\nWins: {wins}\nLoss: {losses}\nWinRate: {winrate}%"
+    msg = (
+        f"📊 EOD PERFORMANCE\n\n"
+        f"Trades: {total}\n"
+        f"🎯 Wins: {wins}\n"
+        f"❌ Loss: {losses}\n"
+        f"⏳ Open: {open_trades}\n"
+        f"Win Rate: {winrate}%"
+    )
 
-    send_alert(message)
-
+    send(msg)
 
 if __name__ == "__main__":
     main()
