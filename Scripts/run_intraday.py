@@ -83,7 +83,12 @@ def save_signal(data):
 # ================= FETCH =================
 def fetch(stock):
     try:
-        df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
+        df = yf.download(
+            stock + ".NS",
+            period="1d",
+            interval="5m",
+            progress=False
+        )
 
         if df is None or df.empty:
             return None
@@ -95,44 +100,77 @@ def fetch(stock):
             return None
 
         return df
+
     except:
         return None
 
-# ================= SNIPER =================
+# ================= HYBRID SNIPER =================
 def sniper(stock):
+
     df = fetch(stock)
     if df is None:
         return None
 
     config = load_config()
 
-    ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
     last = df["Close"].iloc[-1]
+    ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
 
+    # -----------------------------
+    # TREND
+    # -----------------------------
     trend_strength = (last - ema20) / ema20
+    trend_ok = trend_strength > config["trend_min"]
 
+    # -----------------------------
+    # BREAKOUT
+    # -----------------------------
     recent = df.iloc[-6:]
     high = recent["High"].max()
     low = recent["Low"].min()
 
     breakout_strength = (last - high) / high
+    breakout = breakout_strength > config["breakout_min"]
 
+    # -----------------------------
+    # CONTINUATION LOGIC (NEW)
+    # -----------------------------
+    strong_trend = trend_strength > 0.003
+    continuation = last > df["Close"].iloc[-3]
+
+    # -----------------------------
+    # VOLUME
+    # -----------------------------
     avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
     vol = df["Volume"].iloc[-1]
     volume_strength = vol / avg_vol
+    volume_ok = volume_strength > config["volume_min"]
 
+    # -----------------------------
+    # MOMENTUM
+    # -----------------------------
     momentum_strength = (last - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
+    momentum_ok = momentum_strength > config["momentum_min"]
 
-    # APPLY LEARNED RULES
-    if trend_strength < config["trend_min"]:
-        return None
-    if breakout_strength < config["breakout_min"]:
-        return None
-    if volume_strength < config["volume_min"]:
-        return None
-    if momentum_strength < config["momentum_min"]:
+    # -----------------------------
+    # FINAL DECISION (HYBRID)
+    # -----------------------------
+    if not trend_ok:
         return None
 
+    if not volume_ok:
+        return None
+
+    if not momentum_ok:
+        return None
+
+    # 🔥 KEY CHANGE HERE
+    if not (breakout or (strong_trend and continuation)):
+        return None
+
+    # -----------------------------
+    # TRADE LEVELS
+    # -----------------------------
     entry = last
     sl = low
     tp = entry + (entry - sl) * 1.8
@@ -146,7 +184,7 @@ def sniper(stock):
         "date": str(datetime.now().date()),
         "result": "OPEN",
 
-        # FEATURES FOR LEARNING
+        # AI FEATURES
         "trend": round(trend_strength,4),
         "breakout": round(breakout_strength,4),
         "volume": round(volume_strength,2),
@@ -161,7 +199,8 @@ def main():
 
     results = []
 
-    for stock in universe[:200]:  # limit for speed
+    for stock in universe[:200]:  # speed control
+
         try:
             if stock in alerted:
                 continue
@@ -182,9 +221,12 @@ def main():
         print("⚠️ No signals")
         return
 
-    msg = "🏦 HEDGE FUND AI SIGNALS\n\n"
+    # Sort by momentum strength
+    results = sorted(results, key=lambda x: x["momentum"], reverse=True)
 
-    for r in results:
+    msg = "🚀 HYBRID MODE (BREAKOUT + CONTINUATION)\n\n"
+
+    for r in results[:10]:
         msg += (
             f"{r['stock']}\n"
             f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
