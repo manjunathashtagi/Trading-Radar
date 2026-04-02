@@ -3,15 +3,16 @@ import pandas as pd
 import os
 import requests
 import time
+import json
 from datetime import datetime
 
-# ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 DATA_DIR = "data"
 ALERT_FILE = f"{DATA_DIR}/alerted_today.csv"
 SIGNAL_FILE = f"{DATA_DIR}/signals.csv"
+CONFIG_FILE = f"{DATA_DIR}/model_config.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -25,189 +26,150 @@ def send(msg):
     except:
         pass
 
-# ================= ALERT MEMORY =================
+# ================= CONFIG =================
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return {
+            "trend_min": 0.0,
+            "volume_min": 1.5,
+            "momentum_min": 0.003,
+            "win_rate": 0,
+            "total_trades": 0,
+            "wins": 0
+        }
+    return json.load(open(CONFIG_FILE))
+
+# ================= ALERT =================
 def load_alerted():
     if not os.path.exists(ALERT_FILE):
         return set()
-
     df = pd.read_csv(ALERT_FILE)
-
-    if "date" not in df.columns:
-        return set()
-
     today = str(datetime.now().date())
-    return set(df[df["date"] == today]["stock"].tolist())
+    return set(df[df["date"] == today]["stock"].tolist()) if "date" in df.columns else set()
 
 def save_alert(stock):
     today = str(datetime.now().date())
     df = pd.DataFrame([[stock, today]], columns=["stock","date"])
+    df.to_csv(ALERT_FILE, mode="a", header=not os.path.exists(ALERT_FILE), index=False)
 
-    if os.path.exists(ALERT_FILE):
-        df.to_csv(ALERT_FILE, mode="a", header=False, index=False)
-    else:
-        df.to_csv(ALERT_FILE, index=False)
-
-# ================= SAVE SIGNAL =================
+# ================= SAVE =================
 def save_signal(data):
     df = pd.DataFrame([data])
+    df.to_csv(SIGNAL_FILE, mode="a", header=not os.path.exists(SIGNAL_FILE), index=False)
 
-    if os.path.exists(SIGNAL_FILE):
-        df.to_csv(SIGNAL_FILE, mode="a", header=False, index=False)
-    else:
-        df.to_csv(SIGNAL_FILE, index=False)
-
-# ================= STOCK FILTER =================
-def get_strong_stocks():
-    try:
-        df = pd.read_csv(
-            "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        )
-
-        df = df[df["SERIES"] == "EQ"]
-
-        # Take first 300 liquid stocks
-        stocks = df["SYMBOL"].dropna().tolist()[:300]
-
-        return stocks
-
-    except:
-        return []
+# ================= STOCKS =================
+def get_stocks():
+    df = pd.read_csv("https://archives.nseindia.com/content/equities/EQUITY_L.csv")
+    df = df[df["SERIES"] == "EQ"]
+    return df["SYMBOL"].tolist()[:300]
 
 # ================= FETCH =================
 def fetch(stock):
     try:
-        df = yf.download(
-            stock + ".NS",
-            period="1d",
-            interval="5m",
-            progress=False
-        )
-
-        if df is None or df.empty:
+        df = yf.download(stock + ".NS", period="1d", interval="5m", progress=False)
+        if df.empty:
             return None
-
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        df = df.dropna()
-
-        if len(df) < 30:
-            return None
-
-        return df
-
+        return df.dropna()
     except:
         return None
 
-# ================= SNIPER LOGIC =================
-def sniper(stock):
+# ================= AI SCORING =================
+def score_signal(trend, volume, momentum):
+    return round((trend*100 + volume*2 + momentum*100), 2)
+
+# ================= SNIPER =================
+def sniper(stock, config):
 
     df = fetch(stock)
-    if df is None:
+    if df is None or len(df) < 30:
         return None
 
     last = df["Close"].iloc[-1]
 
-    # ❌ Avoid junk stocks
     if last < 50:
         return None
 
     ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
+    trend = (last - ema20) / ema20
 
-    # ================= TREND =================
-    trend_strength = (last - ema20) / ema20
-    if trend_strength < 0:
+    if trend < config["trend_min"]:
         return None
 
-    # ================= RANGE =================
     recent = df.iloc[-6:]
     high = recent["High"].max()
     low = recent["Low"].min()
 
-    # ================= EARLY ENTRY =================
-    distance_to_high = (high - last) / high
-    early_breakout = distance_to_high < 0.003  # 🔥 key fix
+    distance = (high - last) / high
+    early = distance < 0.003
 
-    # ================= CONTINUATION =================
-    strong_trend = trend_strength > 0.003
-    continuation = last > df["Close"].iloc[-3]
-
-    # ================= VOLUME =================
     avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
     vol = df["Volume"].iloc[-1]
 
     if avg_vol == 0:
         return None
 
-    volume_strength = vol / avg_vol
+    volume = vol / avg_vol
 
-    if volume_strength < 1.5:
+    if volume < config["volume_min"]:
         return None
 
-    # ================= MOMENTUM =================
-    momentum_strength = (last - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
+    momentum = (last - df["Close"].iloc[-5]) / df["Close"].iloc[-5]
 
-    if momentum_strength < 0.003:
+    if momentum < config["momentum_min"]:
         return None
 
-    # ================= FINAL CONDITION =================
-    if not (early_breakout or (strong_trend and continuation)):
+    if not early:
         return None
 
-    # ================= TRADE LEVELS =================
-    entry = last
-    sl = low
-    tp = entry * 1.025  # 🔥 better target
+    score = score_signal(trend, volume, momentum)
 
     return {
         "stock": stock,
-        "entry": round(entry,2),
-        "sl": round(sl,2),
-        "tp": round(tp,2),
+        "entry": round(last,2),
+        "sl": round(low,2),
+        "tp": round(last*1.025,2),
+        "trend": round(trend,4),
+        "volume": round(volume,2),
+        "momentum": round(momentum,4),
+        "score": score,
+        "date": str(datetime.now().date()),
         "time": datetime.now().strftime("%H:%M"),
-        "date": str(datetime.now().date())
+        "result": "OPEN"
     }
 
 # ================= MAIN =================
 def main():
 
-    universe = get_strong_stocks()
+    config = load_config()
     alerted = load_alerted()
 
     results = []
 
-    for stock in universe:
+    for stock in get_stocks():
 
-        try:
-            if stock in alerted:
-                continue
-
-            sig = sniper(stock)
-
-            if sig:
-                results.append(sig)
-                save_alert(stock)
-                save_signal(sig)
-
-            time.sleep(0.2)
-
-        except:
+        if stock in alerted:
             continue
+
+        sig = sniper(stock, config)
+
+        if sig:
+            results.append(sig)
+            save_alert(stock)
+            save_signal(sig)
+
+        time.sleep(0.2)
 
     if not results:
         print("⚠️ No signals")
         return
 
-    # Sort by strongest momentum
-    results = sorted(results, key=lambda x: x["entry"], reverse=True)
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
 
-    msg = "🚀 EARLY BREAKOUT SNIPER\n\n"
+    msg = f"🚀 AI SNIPER (WinRate: {config['win_rate']}%)\n\n"
 
     for r in results[:10]:
-        msg += (
-            f"{r['stock']}\n"
-            f"Entry: {r['entry']} | SL: {r['sl']} | TP: {r['tp']}\n\n"
-        )
-
-    msg += "⚡ Entry BEFORE breakout (not late)"
+        msg += f"{r['stock']} ({r['score']})\nEntry:{r['entry']} SL:{r['sl']} TP:{r['tp']}\n\n"
 
     send(msg)
 
