@@ -59,9 +59,31 @@ def save_signal(data):
 
 # ================= STOCKS =================
 def get_stocks():
-    df = pd.read_csv("https://archives.nseindia.com/content/equities/EQUITY_L.csv")
-    df = df[df["SERIES"] == "EQ"]
-    return df["SYMBOL"].tolist()[:300]
+    try:
+        df = pd.read_csv(
+            "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        )
+
+        # Normalize column names (important)
+        df.columns = df.columns.str.strip().str.upper()
+
+        if "SYMBOL" not in df.columns:
+            print("❌ SYMBOL column missing")
+            return []
+
+        # ✅ SAFE FILTER (only if exists)
+        if "SERIES" in df.columns:
+            df = df[df["SERIES"] == "EQ"]
+
+        stocks = df["SYMBOL"].dropna().unique().tolist()
+
+        print(f"✅ Loaded NSE stocks: {len(stocks)}")
+
+        return stocks
+
+    except Exception as e:
+        print(f"❌ NSE fetch error: {e}")
+        return []
 
 # ================= FETCH =================
 def fetch(stock):
