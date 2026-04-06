@@ -110,7 +110,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Stage 1 Wiring Data Builder")
-    parser.add_argument("input_file", help="Path to .kbl / .dsi file")
+    parser.add_argument("input_file", nargs="?", default="sample.kbl",
+                    help="Path to .kbl / .dsi file")
     parser.add_argument("--output", default="stage1_output.json", help="Output JSON file")
 
     args = parser.parse_args()
