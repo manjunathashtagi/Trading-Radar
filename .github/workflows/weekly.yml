@@ -2,7 +2,7 @@ name: Weekly Performance Report
 
 on:
   schedule:
-    - cron: "30 10 * * 5"   # Friday 16:00 IST
+    - cron: "30 10 * * 5"   # Every Friday 16:00 IST
   workflow_dispatch:
 
 jobs:
@@ -15,6 +15,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - run: pip install -r requirements.txt
 
