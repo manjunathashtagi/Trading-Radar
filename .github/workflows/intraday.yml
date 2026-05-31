@@ -2,7 +2,9 @@ name: Intraday Scanner
 
 on:
   schedule:
-  - cron: "11,26,41,56 3-9 * * 1-5"
+    # Runs every 15 min during NSE hours (9:15–15:15 IST = 3:45–9:45 UTC)
+    # Cron fires 5 min early so runner is ready at the signal time
+    - cron: "0,15,30,45 3-9 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -16,9 +18,19 @@ jobs:
         with:
           python-version: "3.10"
 
-      - run: pip install -r requirements.txt
+      # Cache pip dependencies — saves 2-4 min per run
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: Run Intraday
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Intraday Scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -28,9 +40,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
-          git add data/alerted_today.csv || true
-          git commit -m "Intraday update" || echo "No changes"
-
+          git add data/alerted_today.csv data/signals.csv || true
+          git commit -m "Intraday update $(date -u +%H:%M)" || echo "No changes"
           git pull origin main --rebase || true
           git push origin main
