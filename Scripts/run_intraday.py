@@ -18,11 +18,13 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # ================= TELEGRAM =================
 def send(msg):
-    """Send Telegram message immediately — no retry delay bloat."""
+    if not TOKEN or not CHAT_ID:
+        print(msg)
+        return
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": msg},
+            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
             timeout=10
         )
         if r.status_code != 200:
@@ -39,22 +41,25 @@ def load_config():
         "rsi_min": 50,
         "rsi_max": 75,
         "min_score": 60,
+        "tp_pct": 0.010,     # 1.0% target — matches observed move
+        "sl_pct": 0.005,     # 0.5% stop loss — tight risk/reward
         "win_rate": 0,
         "total_trades": 0,
         "wins": 0
     }
     if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(defaults, f, indent=2)
         return defaults
     try:
         loaded = json.load(open(CONFIG_FILE))
-        # Merge: keep new keys from defaults if missing in saved config
         for k, v in defaults.items():
             loaded.setdefault(k, v)
         return loaded
     except Exception:
         return defaults
 
-# ================= ALERT =================
+# ================= ALERT DEDUP =================
 def load_alerted():
     if not os.path.exists(ALERT_FILE):
         return set()
@@ -69,17 +74,15 @@ def load_alerted():
 
 def save_alert(stock):
     today = str(datetime.now().date())
-    df = pd.DataFrame([[stock, today]], columns=["stock", "date"])
-    df.to_csv(ALERT_FILE, mode="a", header=not os.path.exists(ALERT_FILE), index=False)
+    row = pd.DataFrame([[stock, today]], columns=["stock", "date"])
+    row.to_csv(ALERT_FILE, mode="a", header=not os.path.exists(ALERT_FILE), index=False)
 
-# ================= SAVE =================
 def save_signal(data):
     df = pd.DataFrame([data])
     df.to_csv(SIGNAL_FILE, mode="a", header=not os.path.exists(SIGNAL_FILE), index=False)
 
-# ================= STOCKS =================
+# ================= STAGE-1 STOCKS =================
 def get_stage1_stocks():
-    """Use Stage-1 cache if fresh (today's date), else fallback to NSE universe."""
     cache_file = f"{DATA_DIR}/stage1_cache.csv"
     try:
         if os.path.exists(cache_file):
@@ -90,34 +93,32 @@ def get_stage1_stocks():
                 today_df = df[df["date"] == today]
                 if not today_df.empty:
                     symbols = today_df["symbol"].dropna().tolist()
-                    print(f"✅ Stage-1 cache loaded: {len(symbols)} stocks")
+                    print(f"✅ Stage-1 cache: {len(symbols)} stocks")
                     return symbols
     except Exception as e:
-        print(f"Stage-1 cache read error: {e}")
+        print(f"Stage-1 cache error: {e}")
 
-    # Fallback: fetch NSE EQ universe
+    # Fallback: NSE EQ universe
     try:
         df = pd.read_csv("https://archives.nseindia.com/content/equities/EQUITY_L.csv")
         df.columns = df.columns.str.strip().str.upper()
         if "SERIES" in df.columns:
             df = df[df["SERIES"] == "EQ"]
         stocks = df["SYMBOL"].dropna().unique().tolist()
-        print(f"⚠️ Stage-1 cache stale — using NSE universe: {len(stocks)} stocks")
+        print(f"⚠️ Stage-1 stale — NSE universe: {len(stocks)} stocks")
         return stocks
     except Exception as e:
         print(f"❌ NSE fetch error: {e}")
         return []
 
-# ================= FETCH =================
+# ================= DATA FETCH =================
 def fetch(stock):
     try:
-        df = yf.download(stock + ".NS", period="5d", interval="5m", progress=False)
+        df = yf.download(stock + ".NS", period="3d", interval="5m", progress=False)
         if df.empty:
             return None
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
         df = df.dropna()
-        # Only keep today's candles
-        today = str(datetime.now().date())
         df.index = pd.to_datetime(df.index)
         df = df[df.index.date == datetime.now().date()]
         return df if len(df) >= 10 else None
@@ -139,16 +140,16 @@ def compute_vwap(df):
 # ================= SCORE =================
 def score_signal(trend, volume, momentum, rsi, near_vwap):
     score = 0
-    score += min(trend * 5000, 25)       # up to 25 pts
-    score += min((volume - 1) * 15, 25)  # up to 25 pts
-    score += min(momentum * 5000, 25)    # up to 25 pts
+    score += min(trend * 5000, 25)
+    score += min((volume - 1) * 15, 25)
+    score += min(momentum * 5000, 25)
     if 50 <= rsi <= 75:
         score += 15
     if near_vwap:
         score += 10
     return round(score, 2)
 
-# ================= SNIPER =================
+# ================= SCANNER =================
 def sniper(stock, config):
     df = fetch(stock)
     if df is None or len(df) < 15:
@@ -157,11 +158,10 @@ def sniper(stock, config):
     close = df["Close"]
     last = float(close.iloc[-1])
 
-    # Price floor
     if last < 50:
         return None
 
-    # ---- TREND: EMA20 > EMA50 (bullish structure) ----
+    # Trend: EMA20 > EMA50
     ema20 = float(close.ewm(span=20).mean().iloc[-1])
     ema50 = float(close.ewm(span=50).mean().iloc[-1])
     if ema20 <= ema50:
@@ -171,12 +171,15 @@ def sniper(stock, config):
     if trend < config["trend_min"]:
         return None
 
-    # ---- RSI: not overbought, not oversold ----
-    rsi = float(compute_rsi(close).iloc[-1])
+    # RSI
+    rsi_series = compute_rsi(close)
+    if rsi_series.isna().all():
+        return None
+    rsi = float(rsi_series.iloc[-1])
     if not (config["rsi_min"] <= rsi <= config["rsi_max"]):
         return None
 
-    # ---- VOLUME surge ----
+    # Volume surge
     avg_vol = float(df["Volume"].rolling(20).mean().iloc[-1])
     vol = float(df["Volume"].iloc[-1])
     if avg_vol == 0:
@@ -185,37 +188,43 @@ def sniper(stock, config):
     if volume_ratio < config["volume_min"]:
         return None
 
-    # ---- MOMENTUM (5-bar) ----
+    # Momentum (5-bar)
     if len(close) < 6:
         return None
     momentum = float((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5])
     if momentum < config["momentum_min"]:
         return None
 
-    # ---- VWAP: price above VWAP (buy-side confirmation) ----
+    # VWAP
     vwap = float(compute_vwap(df).iloc[-1])
-    near_vwap = last > vwap * 0.998  # within 0.2% above VWAP
+    near_vwap = last > vwap * 0.998
 
-    # ---- BREAKOUT: near recent high (entry timing) ----
+    # Breakout: within 0.5% of 8-bar high
     recent = df.iloc[-8:]
-    high = float(recent["High"].max())
-    low = float(recent["Low"].min())
-    distance_to_high = (high - last) / high
-    is_breakout = distance_to_high < 0.005  # within 0.5% of recent high
-
-    if not is_breakout:
+    high_8 = float(recent["High"].max())
+    low_8 = float(recent["Low"].min())
+    if (high_8 - last) / high_8 >= 0.005:
         return None
 
-    # ---- COMPOSITE SCORE ----
+    # Score gate
     score = score_signal(trend, volume_ratio, momentum, rsi, near_vwap)
     if score < config.get("min_score", 60):
         return None
 
+    # --- TP/SL: calibrated to observed 1–1.5% moves ---
+    tp_pct = config.get("tp_pct", 0.010)   # 1.0% target
+    sl_pct = config.get("sl_pct", 0.005)   # 0.5% stop
+
+    tp = round(last * (1 + tp_pct), 2)
+    sl = round(last * (1 - sl_pct), 2)
+    risk_reward = round(tp_pct / sl_pct, 1)  # should be 2.0
+
     return {
         "stock": stock,
         "entry": round(last, 2),
-        "sl": round(low, 2),
-        "tp": round(last * 1.025, 2),
+        "sl": sl,
+        "tp": tp,
+        "rr": risk_reward,
         "trend": round(trend, 4),
         "volume": round(volume_ratio, 2),
         "momentum": round(momentum, 4),
@@ -234,12 +243,13 @@ def main():
     stocks = get_stage1_stocks()
 
     if not stocks:
-        send("⚠️ Trading Radar: No stocks loaded for scan.")
+        send("⚠️ Trading Radar: No stocks loaded.")
         return
 
-    print(f"🔍 Scanning {len(stocks)} stocks...")
-    results = []
+    now = datetime.now()
+    print(f"🔍 [{now.strftime('%H:%M')}] Scanning {len(stocks)} stocks...")
 
+    results = []
     for stock in stocks:
         if stock in alerted:
             continue
@@ -250,29 +260,30 @@ def main():
                 save_alert(stock)
                 save_signal(sig)
         except Exception as e:
-            print(f"Error on {stock}: {e}")
+            print(f"  ⚠️ {stock}: {e}")
         time.sleep(0.15)
 
     if not results:
-        print("⚠️ No signals this scan")
+        print("No signals this scan.")
         return
 
     results = sorted(results, key=lambda x: x["score"], reverse=True)
-    top = results[:5]  # send top 5 only (quality > quantity)
+    top = results[:5]
 
     win_rate = config.get("win_rate", 0)
-    msg = f"🚀 TRADING RADAR SIGNALS (WinRate: {win_rate}%)\n"
-    msg += f"Time: {datetime.now().strftime('%H:%M')} | Found: {len(results)}\n\n"
+    scan_time = now.strftime("%H:%M")
+    msg = f"🚀 *TRADING RADAR* | {scan_time} | WR: {win_rate}%\n"
+    msg += f"Found: {len(results)} signals\n\n"
 
     for r in top:
         msg += (
-            f"📈 {r['stock']} [Score:{r['score']}]\n"
-            f"Entry: ₹{r['entry']}  SL: ₹{r['sl']}  TP: ₹{r['tp']}\n"
-            f"RSI: {r['rsi']}  Vol: {r['volume']}x  Mom: {r['momentum']}\n\n"
+            f"📈 *{r['stock']}* [Score: {r['score']}]\n"
+            f"Entry: ₹{r['entry']}  TP: ₹{r['tp']} (+1%)  SL: ₹{r['sl']} (-0.5%)\n"
+            f"R:R = {r['rr']}x  |  RSI: {r['rsi']}  Vol: {r['volume']}x\n\n"
         )
 
     send(msg)
-    print(f"✅ Sent {len(top)} signals")
+    print(f"✅ Sent {len(top)} signals at {scan_time}")
 
 if __name__ == "__main__":
     main()
