@@ -2,14 +2,11 @@ name: Intraday Scanner
 
 on:
   schedule:
-    # Every 5 min during NSE hours 9:10–15:20 IST (3:40–9:50 UTC)
-    # Tighter polling = less gap between signal and alert
     - cron: "40,45,50,55 3 * * 1-5"
     - cron: "0,5,10,15,20,25,30,35,40,45,50,55 4-8 * * 1-5"
     - cron: "0,5,10,15,20,25,30,35,40,45,50 9 * * 1-5"
   workflow_dispatch:
 
-# Cancel any queued run if a newer one comes in — avoids pileup
 concurrency:
   group: intraday-scan
   cancel-in-progress: true
@@ -49,6 +46,10 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add data/alerted_today.csv data/signals.csv || true
-          git commit -m "Intraday $(date -u +%H:%M)" || echo "No changes"
-          git pull origin main --rebase || true
-          git push origin main
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Intraday $(date -u +%H:%M)"
+          for i in 1 2 3; do
+            git pull origin main --rebase && git push origin main && break
+            echo "Retry $i..."
+            sleep $((i * 5))
+          done
