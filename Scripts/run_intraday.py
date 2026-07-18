@@ -79,7 +79,21 @@ def save_alert(stock):
 
 def save_signal(data):
     df = pd.DataFrame([data])
-    df.to_csv(SIGNAL_FILE, mode="a", header=not os.path.exists(SIGNAL_FILE), index=False)
+    file_exists = os.path.exists(SIGNAL_FILE) and os.path.getsize(SIGNAL_FILE) > 0
+
+    if file_exists:
+        existing_cols = pd.read_csv(SIGNAL_FILE, nrows=0).columns.tolist()
+        if existing_cols != list(df.columns):
+            # Schema drift: never blind-append mismatched columns (this is what corrupted
+            # signals.csv before). Reindex to the file's actual header instead -- fills any
+            # new field with NaN and drops any field the file doesn't have.
+            print(f"⚠️ signals.csv schema differs from current signal fields.\n"
+                  f"   file header: {existing_cols}\n"
+                  f"   new signal:  {list(df.columns)}\n"
+                  f"   Reindexing new row to match file header.")
+            df = df.reindex(columns=existing_cols)
+
+    df.to_csv(SIGNAL_FILE, mode="a", header=not file_exists, index=False)
 
 # ================= STAGE-1 STOCKS =================
 def get_stage1_stocks():
