@@ -5,7 +5,7 @@
   "rsi_min": 50,
   "rsi_max": 75,
   "min_score": 60,
-  "tp_pct": 0.010,
+  "tp_pct": 0.01,
   "sl_pct": 0.005,
   "win_rate": 0,
   "total_trades": 0,
