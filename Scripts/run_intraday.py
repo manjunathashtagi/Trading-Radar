@@ -300,4 +300,306 @@ def main():
     print(f"✅ Sent {len(top)} signals at {scan_time}")
 
 if __name__ == "__main__":
+    main()import yfinance as yf
+import pandas as pd
+import os
+import requests
+import time
+import json
+from datetime import datetime
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+DATA_DIR = "data"
+ALERT_FILE = f"{DATA_DIR}/alerted_today.csv"
+SIGNAL_FILE = f"{DATA_DIR}/signals.csv"
+CONFIG_FILE = f"{DATA_DIR}/model_config.json"
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# ================= TELEGRAM =================
+def send(msg):
+    if not TOKEN or not CHAT_ID:
+        print(msg)
+        return
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+        if r.status_code != 200:
+            print(f"Telegram error: {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"Telegram exception: {e}")
+
+# ================= CONFIG =================
+def load_config():
+    defaults = {
+        "trend_min": 0.002,
+        "volume_min": 1.5,
+        "momentum_min": 0.003,
+        "rsi_min": 50,
+        "rsi_max": 75,
+        "min_score": 60,
+        "tp_pct": 0.010,     # 1.0% target — matches observed move
+        "sl_pct": 0.005,     # 0.5% stop loss — tight risk/reward
+        "win_rate": 0,
+        "total_trades": 0,
+        "wins": 0
+    }
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(defaults, f, indent=2)
+        return defaults
+    try:
+        loaded = json.load(open(CONFIG_FILE))
+        for k, v in defaults.items():
+            loaded.setdefault(k, v)
+        return loaded
+    except Exception:
+        return defaults
+
+# ================= ALERT DEDUP =================
+def load_alerted():
+    if not os.path.exists(ALERT_FILE):
+        return set()
+    try:
+        df = pd.read_csv(ALERT_FILE)
+        today = str(datetime.now().date())
+        if "date" in df.columns:
+            return set(df[df["date"] == today]["stock"].tolist())
+    except Exception:
+        pass
+    return set()
+
+def save_alert(stock):
+    today = str(datetime.now().date())
+    row = pd.DataFrame([[stock, today]], columns=["stock", "date"])
+    row.to_csv(ALERT_FILE, mode="a", header=not os.path.exists(ALERT_FILE), index=False)
+
+def save_signal(data):
+    df = pd.DataFrame([data])
+    file_exists = os.path.exists(SIGNAL_FILE) and os.path.getsize(SIGNAL_FILE) > 0
+
+    if file_exists:
+        existing_cols = pd.read_csv(SIGNAL_FILE, nrows=0).columns.tolist()
+        if existing_cols != list(df.columns):
+            # Schema drift: never blind-append mismatched columns (this is what corrupted
+            # signals.csv before). Reindex to the file's actual header instead -- fills any
+            # new field with NaN and drops any field the file doesn't have.
+            print(f"⚠️ signals.csv schema differs from current signal fields.\n"
+                  f"   file header: {existing_cols}\n"
+                  f"   new signal:  {list(df.columns)}\n"
+                  f"   Reindexing new row to match file header.")
+            df = df.reindex(columns=existing_cols)
+
+    df.to_csv(SIGNAL_FILE, mode="a", header=not file_exists, index=False)
+
+# ================= STAGE-1 STOCKS =================
+def get_stage1_stocks():
+    cache_file = f"{DATA_DIR}/stage1_cache.csv"
+    try:
+        if os.path.exists(cache_file):
+            df = pd.read_csv(cache_file)
+            if "date" in df.columns:
+                today = str(datetime.now().date())
+                df["date"] = df["date"].astype(str)
+                today_df = df[df["date"] == today]
+                if not today_df.empty:
+                    symbols = today_df["symbol"].dropna().tolist()
+                    print(f"✅ Stage-1 cache: {len(symbols)} stocks")
+                    return symbols
+    except Exception as e:
+        print(f"Stage-1 cache error: {e}")
+
+    # Fallback: NSE EQ universe
+    try:
+        df = pd.read_csv("https://archives.nseindia.com/content/equities/EQUITY_L.csv")
+        df.columns = df.columns.str.strip().str.upper()
+        if "SERIES" in df.columns:
+            df = df[df["SERIES"] == "EQ"]
+        stocks = df["SYMBOL"].dropna().unique().tolist()
+        print(f"⚠️ Stage-1 stale — NSE universe: {len(stocks)} stocks")
+        return stocks
+    except Exception as e:
+        print(f"❌ NSE fetch error: {e}")
+        return []
+
+# ================= DATA FETCH =================
+def fetch(stock):
+    try:
+        df = yf.download(stock + ".NS", period="3d", interval="5m", progress=False)
+        if df.empty:
+            return None
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        df = df.dropna()
+        df.index = pd.to_datetime(df.index)
+        df = df[df.index.date == datetime.now().date()]
+        return df if len(df) >= 10 else None
+    except Exception:
+        return None
+
+# ================= INDICATORS =================
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, 1e-9)
+    return 100 - (100 / (1 + rs))
+
+def compute_vwap(df):
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    return (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
+
+# ================= SCORE =================
+def score_signal(trend, volume, momentum, rsi, near_vwap):
+    score = 0
+    score += min(trend * 5000, 25)
+    score += min((volume - 1) * 15, 25)
+    score += min(momentum * 5000, 25)
+    if 50 <= rsi <= 75:
+        score += 15
+    if near_vwap:
+        score += 10
+    return round(score, 2)
+
+# ================= SCANNER =================
+def sniper(stock, config):
+    df = fetch(stock)
+    if df is None or len(df) < 15:
+        return None
+
+    close = df["Close"]
+    last = float(close.iloc[-1])
+
+    if last < 50:
+        return None
+
+    # Trend: EMA20 > EMA50
+    ema20 = float(close.ewm(span=20).mean().iloc[-1])
+    ema50 = float(close.ewm(span=50).mean().iloc[-1])
+    if ema20 <= ema50:
+        return None
+
+    trend = (last - ema20) / ema20
+    if trend < config["trend_min"]:
+        return None
+
+    # RSI
+    rsi_series = compute_rsi(close)
+    if rsi_series.isna().all():
+        return None
+    rsi = float(rsi_series.iloc[-1])
+    if not (config["rsi_min"] <= rsi <= config["rsi_max"]):
+        return None
+
+    # Volume surge
+    avg_vol = float(df["Volume"].rolling(20).mean().iloc[-1])
+    vol = float(df["Volume"].iloc[-1])
+    if avg_vol == 0:
+        return None
+    volume_ratio = vol / avg_vol
+    if volume_ratio < config["volume_min"]:
+        return None
+
+    # Momentum (5-bar)
+    if len(close) < 6:
+        return None
+    momentum = float((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5])
+    if momentum < config["momentum_min"]:
+        return None
+
+    # VWAP
+    vwap = float(compute_vwap(df).iloc[-1])
+    near_vwap = last > vwap * 0.998
+
+    # Breakout: within 0.5% of 8-bar high
+    recent = df.iloc[-8:]
+    high_8 = float(recent["High"].max())
+    low_8 = float(recent["Low"].min())
+    if (high_8 - last) / high_8 >= 0.005:
+        return None
+
+    # Score gate
+    score = score_signal(trend, volume_ratio, momentum, rsi, near_vwap)
+    if score < config.get("min_score", 60):
+        return None
+
+    # --- TP/SL: calibrated to observed 1–1.5% moves ---
+    tp_pct = config.get("tp_pct", 0.010)   # 1.0% target
+    sl_pct = config.get("sl_pct", 0.005)   # 0.5% stop
+
+    tp = round(last * (1 + tp_pct), 2)
+    sl = round(last * (1 - sl_pct), 2)
+    risk_reward = round(tp_pct / sl_pct, 1)  # should be 2.0
+
+    return {
+        "stock": stock,
+        "entry": round(last, 2),
+        "sl": sl,
+        "tp": tp,
+        "rr": risk_reward,
+        "trend": round(trend, 4),
+        "volume": round(volume_ratio, 2),
+        "momentum": round(momentum, 4),
+        "rsi": round(rsi, 1),
+        "vwap": round(vwap, 2),
+        "score": score,
+        "date": str(datetime.now().date()),
+        "time": datetime.now().strftime("%H:%M"),
+        "result": "OPEN"
+    }
+
+# ================= MAIN =================
+def main():
+    config = load_config()
+    alerted = load_alerted()
+    stocks = get_stage1_stocks()
+
+    if not stocks:
+        send("⚠️ Trading Radar: No stocks loaded.")
+        return
+
+    now = datetime.now()
+    print(f"🔍 [{now.strftime('%H:%M')}] Scanning {len(stocks)} stocks...")
+
+    results = []
+    for stock in stocks:
+        if stock in alerted:
+            continue
+        try:
+            sig = sniper(stock, config)
+            if sig:
+                results.append(sig)
+                save_alert(stock)
+                save_signal(sig)
+        except Exception as e:
+            print(f"  ⚠️ {stock}: {e}")
+        time.sleep(0.15)
+
+    if not results:
+        print("No signals this scan.")
+        return
+
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    top = results[:5]
+
+    win_rate = config.get("win_rate", 0)
+    scan_time = now.strftime("%H:%M")
+    msg = f"🚀 *TRADING RADAR* | {scan_time} | WR: {win_rate}%\n"
+    msg += f"Found: {len(results)} signals\n\n"
+
+    for r in top:
+        msg += (
+            f"📈 *{r['stock']}* [Score: {r['score']}]\n"
+            f"Entry: ₹{r['entry']}  TP: ₹{r['tp']} (+1%)  SL: ₹{r['sl']} (-0.5%)\n"
+            f"R:R = {r['rr']}x  |  RSI: {r['rsi']}  Vol: {r['volume']}x\n\n"
+        )
+
+    send(msg)
+    print(f"✅ Sent {len(top)} signals at {scan_time}")
+
+if __name__ == "__main__":
     main()
