@@ -41,51 +41,80 @@ def load_config():
 
 def evaluate_open_signals(df):
     """
-    Close-of-day evaluation: mark OPEN signals as TARGET or SL
-    based on whether entry reached TP or SL during the day.
-    This uses EOD price from yfinance for a quick check.
+    Evaluate every OPEN signal -- not just ones raised today. Walks forward
+    day-by-day from each signal's own date to today using daily OHLC and marks
+    the first day TP or SL was touched. A signal only stays OPEN if neither
+    has been touched on any trading day since it was raised.
+
+    Previously this only checked `date == today`, so any signal that didn't
+    resolve on its own generation day was silently orphaned as OPEN forever --
+    that's why signals.csv had zero closed trades across 34 trading days.
+
+    If both TP and SL are touched on the same day, SL is assumed to have
+    happened first -- daily bars can't tell intraday order, so this is the
+    conservative (not optimistic) assumption.
     """
     try:
         import yfinance as yf
-        today = str(datetime.now().date())
-        updated = 0
-
-        for idx, row in df.iterrows():
-            if str(row.get("result", "")).strip() != "OPEN":
-                continue
-            if str(row.get("date", "")) != today:
-                continue
-
-            symbol = row.get("stock") or row.get("symbol")
-            if not symbol:
-                continue
-
-            try:
-                hist = yf.download(symbol + ".NS", period="1d", interval="5m", progress=False)
-                if hist.empty:
-                    continue
-                hist.columns = [c[0] if isinstance(c, tuple) else c for c in hist.columns]
-
-                day_high = float(hist["High"].max())
-                day_low = float(hist["Low"].min())
-                tp = float(row["tp"])
-                sl = float(row["sl"])
-
-                if day_high >= tp:
-                    df.at[idx, "result"] = "TARGET"
-                    updated += 1
-                elif day_low <= sl:
-                    df.at[idx, "result"] = "SL"
-                    updated += 1
-            except Exception:
-                continue
-
-        print(f"📊 EOD: evaluated {updated} open signals")
-        return df
-
     except ImportError:
         print("yfinance not available for EOD evaluation")
         return df
+
+    open_mask = df["result"].astype(str).str.strip() == "OPEN"
+    open_df = df[open_mask]
+
+    if open_df.empty:
+        print("📊 EOD: no open signals to evaluate")
+        return df
+
+    updated = 0
+    # One yfinance call per symbol (covering its earliest pending date to today),
+    # not one per row -- avoids re-downloading the same stock's history repeatedly.
+    for symbol, group in open_df.groupby("stock"):
+        if not symbol or str(symbol) == "nan":
+            continue
+
+        start_date = str(group["date"].min())
+        try:
+            hist = yf.download(f"{symbol}.NS", start=start_date, interval="1d", progress=False)
+            if hist.empty:
+                continue
+            hist.columns = [c[0] if isinstance(c, tuple) else c for c in hist.columns]
+            hist.index = hist.index.astype(str).str[:10]  # normalize to YYYY-MM-DD
+        except Exception:
+            continue
+
+        for idx, row in group.iterrows():
+            sig_date = str(row["date"])
+            try:
+                tp = float(row["tp"])
+                sl = float(row["sl"])
+            except (ValueError, TypeError):
+                continue
+
+            window = hist[hist.index >= sig_date]
+            if window.empty:
+                continue
+
+            result = None
+            for _, day in window.iterrows():
+                hit_tp = day["High"] >= tp
+                hit_sl = day["Low"] <= sl
+                if hit_tp and hit_sl:
+                    result = "SL"  # ambiguous same-day order -- conservative
+                elif hit_tp:
+                    result = "TARGET"
+                elif hit_sl:
+                    result = "SL"
+                if result:
+                    break
+
+            if result:
+                df.at[idx, "result"] = result
+                updated += 1
+
+    print(f"📊 EOD: evaluated {updated} open signals (across all pending dates)")
+    return df
 
 def main():
     today = str(datetime.now().date())
