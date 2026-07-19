@@ -22,12 +22,23 @@ def main():
     if winners.empty:
         return
 
-    config = {
-        "trend_min": float(winners["trend"].mean()*0.8),
-        "breakout_min": float(winners["breakout"].mean()*0.8),
-        "volume_min": float(winners["volume"].mean()*0.8),
-        "momentum_min": float(winners["momentum"].mean()*0.8)
-    }
+    # Load existing config and update only the learned fields, instead of
+    # overwriting the whole file. The previous version replaced the entire
+    # config dict, which would have silently wiped rsi_min/rsi_max/min_score/
+    # tp_pct/sl_pct/win_rate/total_trades/wins on every run.
+    config = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            config = json.load(open(CONFIG_FILE))
+        except Exception:
+            config = {}
+
+    config["trend_min"] = float(winners["trend"].mean() * 0.8)
+    config["volume_min"] = float(winners["volume"].mean() * 0.8)
+    config["momentum_min"] = float(winners["momentum"].mean() * 0.8)
+    # "breakout" was never a field this system's signals actually carry
+    # (only Scripts/debug_stock.py used that name) -- removed rather than
+    # left in to crash with a KeyError the first time this had 20+ closed trades.
 
     with open(CONFIG_FILE,"w") as f:
         json.dump(config,f,indent=4)
