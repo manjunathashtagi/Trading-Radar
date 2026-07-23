@@ -1,13 +1,13 @@
 {
-  "trend_min": 0.005,
-  "volume_min": 1.8,
-  "momentum_min": 0.006,
+  "trend_min": 0.006,
+  "volume_min": 1.9,
+  "momentum_min": 0.007,
   "rsi_min": 50,
   "rsi_max": 75,
-  "min_score": 66,
+  "min_score": 68,
   "tp_pct": 0.01,
   "sl_pct": 0.005,
   "win_rate": 0.1,
-  "total_trades": 2378,
+  "total_trades": 2397,
   "wins": 2
 }
