@@ -41,18 +41,19 @@ def load_config():
 
 def evaluate_open_signals(df):
     """
-    Evaluate every OPEN signal -- not just ones raised today. Walks forward
-    day-by-day from each signal's own date to today using daily OHLC and marks
-    the first day TP or SL was touched. A signal only stays OPEN if neither
-    has been touched on any trading day since it was raised.
+    Evaluate every OPEN signal using intraday (5-minute) bars starting from the
+    signal's exact timestamp, not the whole trading day.
 
-    Previously this only checked `date == today`, so any signal that didn't
-    resolve on its own generation day was silently orphaned as OPEN forever --
-    that's why signals.csv had zero closed trades across 34 trading days.
+    Previous version used full daily High/Low, which includes price action
+    BEFORE the signal fired. Since these are momentum/volume-surge stocks,
+    the day's total range almost always exceeds the 1%/0.5% TP/SL band
+    regardless of what happened after entry -- so it defaulted to the
+    conservative "both touched -> SL" branch on nearly every signal
+    (that's why All-Time win rate showed 0.1% with 2462/2462 marked SL).
 
-    If both TP and SL are touched on the same day, SL is assumed to have
-    happened first -- daily bars can't tell intraday order, so this is the
-    conservative (not optimistic) assumption.
+    Yahoo only retains 5-minute history for ~60 days. Signals older than that
+    fall back to daily bars (same limitation as before, but daily-only after
+    60 days is unavoidable -- Yahoo simply doesn't have finer data that far back).
     """
     try:
         import yfinance as yf
@@ -60,6 +61,7 @@ def evaluate_open_signals(df):
         print("yfinance not available for EOD evaluation")
         return df
 
+    today = datetime.now().date()
     open_mask = df["result"].astype(str).str.strip() == "OPEN"
     open_df = df[open_mask]
 
@@ -68,21 +70,34 @@ def evaluate_open_signals(df):
         return df
 
     updated = 0
-    # One yfinance call per symbol (covering its earliest pending date to today),
-    # not one per row -- avoids re-downloading the same stock's history repeatedly.
     for symbol, group in open_df.groupby("stock"):
         if not symbol or str(symbol) == "nan":
             continue
 
-        start_date = str(group["date"].min())
+        start_date_str = str(group["date"].min())
         try:
-            hist = yf.download(f"{symbol}.NS", start=start_date, interval="1d", progress=False)
+            start_dt = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+
+        days_back = (today - start_dt).days
+        use_intraday = days_back <= 58  # stay safely inside Yahoo's ~60-day 5m limit
+
+        try:
+            interval = "5m" if use_intraday else "1d"
+            hist = yf.download(f"{symbol}.NS", start=start_date_str, interval=interval, progress=False)
             if hist.empty:
                 continue
             hist.columns = [c[0] if isinstance(c, tuple) else c for c in hist.columns]
-            hist.index = hist.index.astype(str).str[:10]  # normalize to YYYY-MM-DD
+            if use_intraday and hist.index.tz is not None:
+                # yfinance returns tz-aware intraday index; normalize to IST-naive
+                # so it compares cleanly against the signal's date/time strings
+                hist.index = hist.index.tz_convert("Asia/Kolkata").tz_localize(None)
         except Exception:
             continue
+
+        if not use_intraday:
+            hist.index = hist.index.astype(str).str[:10]
 
         for idx, row in group.iterrows():
             sig_date = str(row["date"])
@@ -92,16 +107,25 @@ def evaluate_open_signals(df):
             except (ValueError, TypeError):
                 continue
 
-            window = hist[hist.index >= sig_date]
+            if use_intraday:
+                sig_time = str(row.get("time", "09:15"))
+                try:
+                    sig_ts = pd.Timestamp(f"{sig_date} {sig_time}")
+                except Exception:
+                    sig_ts = pd.Timestamp(f"{sig_date} 09:15")
+                window = hist[hist.index >= sig_ts]
+            else:
+                window = hist[hist.index >= sig_date]
+
             if window.empty:
                 continue
 
             result = None
-            for _, day in window.iterrows():
-                hit_tp = day["High"] >= tp
-                hit_sl = day["Low"] <= sl
+            for _, bar in window.iterrows():
+                hit_tp = bar["High"] >= tp
+                hit_sl = bar["Low"] <= sl
                 if hit_tp and hit_sl:
-                    result = "SL"  # ambiguous same-day order -- conservative
+                    result = "SL"  # ambiguous same-bar order -- conservative
                 elif hit_tp:
                     result = "TARGET"
                 elif hit_sl:
@@ -113,7 +137,7 @@ def evaluate_open_signals(df):
                 df.at[idx, "result"] = result
                 updated += 1
 
-    print(f"📊 EOD: evaluated {updated} open signals (across all pending dates)")
+    print(f"📊 EOD: evaluated {updated} open signals (intraday where available)")
     return df
 
 def main():
