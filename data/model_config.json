@@ -1,7 +1,7 @@
 {
-  "trend_min": 0.009,
+  "trend_min": 0.003,
   "volume_min": 2.2,
-  "momentum_min": 0.01,
+  "momentum_min": 0.004,
   "rsi_min": 50,
   "rsi_max": 75,
   "min_score": 74,
