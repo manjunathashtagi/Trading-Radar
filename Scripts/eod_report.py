@@ -180,11 +180,15 @@ def main():
 
     if all_total >= 10:
         if all_time_wr < 45:
-            # Tighten filters when performing poorly
+            # Tighten filters when performing poorly.
+            # trend_min/momentum_min are NOT raised here anymore -- real win/loss
+            # data showed winners had LOWER trend/momentum than losers (both in
+            # full data and in a clean, well-timed-only subset), so raising these
+            # floors was actively fighting the trend_max/momentum_max caps added
+            # separately, and even collided with them entirely on 2026-07-29.
+            # volume_min and min_score showed no such inversion, so those still tighten.
             config["volume_min"] = round(min(config["volume_min"] + 0.1, 3.0), 2)
-            config["momentum_min"] = round(min(config["momentum_min"] + 0.001, 0.015), 4)
             config["min_score"] = min(config.get("min_score", 60) + 2, 80)
-            config["trend_min"] = round(min(config["trend_min"] + 0.001, 0.01), 4)
             print("📉 Tightening filters (win rate below 45%)")
         elif all_time_wr > 60:
             # Relax slightly when performing well
