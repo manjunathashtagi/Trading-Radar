@@ -55,7 +55,9 @@ def load_config():
         "volume_min": 1.5,
         "momentum_min": 0.003,
         "rsi_min": 50,
-        "rsi_max": 75,
+        "rsi_max": 90,  # raised from 75 -- was structurally excluding genuine
+                        # strong-momentum stocks (RSI 75-90 during real trends),
+                        # a reasoned change, not yet proven by live data.
         "min_score": 60,
         # Upper caps added based on real win/loss data: winners had LOWER median
         # trend/momentum than losers (both in full data and in the clean,
@@ -120,22 +122,11 @@ def save_signal(data):
 
 # ================= STAGE-1 STOCKS =================
 def get_stage1_stocks():
-    cache_file = f"{DATA_DIR}/stage1_cache.csv"
-    try:
-        if os.path.exists(cache_file):
-            df = pd.read_csv(cache_file)
-            if "date" in df.columns:
-                today = str(datetime.now().date())
-                df["date"] = df["date"].astype(str)
-                today_df = df[df["date"] == today]
-                if not today_df.empty:
-                    symbols = today_df["symbol"].dropna().tolist()
-                    print(f"✅ Stage-1 cache: {len(symbols)} stocks")
-                    return symbols
-    except Exception as e:
-        print(f"Stage-1 cache error: {e}")
-
-    # Fallback: NSE EQ universe
+    # The old stage1_cache.csv path is removed -- it was stuck on 2026-03-25
+    # (4+ months stale), so the date-check below always failed and this was
+    # ALREADY falling through to the full NSE universe every single day.
+    # Removing the dead cache-read just stops the code pretending otherwise;
+    # it does not change what stocks get scanned.
     try:
         df = pd.read_csv("https://archives.nseindia.com/content/equities/EQUITY_L.csv")
         df.columns = df.columns.str.strip().str.upper()
@@ -175,12 +166,12 @@ def compute_vwap(df):
     return (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
 # ================= SCORE =================
-def score_signal(trend, volume, momentum, rsi, near_vwap):
+def score_signal(trend, volume, momentum, rsi, near_vwap, rsi_min=50, rsi_max=90):
     score = 0
     score += min(trend * 5000, 25)
     score += min((volume - 1) * 15, 25)
     score += min(momentum * 5000, 25)
-    if 50 <= rsi <= 75:
+    if rsi_min <= rsi <= rsi_max:  # now matches the actual filter range, not a stale hardcoded 50-75
         score += 15
     if near_vwap:
         score += 10
@@ -205,7 +196,7 @@ def sniper(stock, config):
         return None
 
     trend = (last - ema20) / ema20
-    if trend < config["trend_min"]:
+    if pd.isna(trend) or trend < config["trend_min"]:
         return None
     if trend > config.get("trend_max", 0.009):
         return None  # too extended -- real data showed these underperform
@@ -218,20 +209,25 @@ def sniper(stock, config):
     if not (config["rsi_min"] <= rsi <= config["rsi_max"]):
         return None
 
-    # Volume surge
+    # Volume surge -- rolling(20) needs 20 real bars; earlier in the session
+    # there aren't enough yet, which silently produced NaN that slipped past
+    # every downstream filter (NaN < x is always False in Python). Require
+    # enough bars up front and explicitly reject any NaN result.
+    if len(df) < 20:
+        return None
     avg_vol = float(df["Volume"].rolling(20).mean().iloc[-1])
     vol = float(df["Volume"].iloc[-1])
-    if avg_vol == 0:
+    if pd.isna(avg_vol) or avg_vol == 0:
         return None
     volume_ratio = vol / avg_vol
-    if volume_ratio < config["volume_min"]:
+    if pd.isna(volume_ratio) or volume_ratio < config["volume_min"]:
         return None
 
     # Momentum (5-bar)
     if len(close) < 6:
         return None
     momentum = float((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5])
-    if momentum < config["momentum_min"]:
+    if pd.isna(momentum) or momentum < config["momentum_min"]:
         return None
     if momentum > config.get("momentum_max", 0.010):
         return None  # too extended -- real data showed these underperform
@@ -248,8 +244,9 @@ def sniper(stock, config):
         return None
 
     # Score gate
-    score = score_signal(trend, volume_ratio, momentum, rsi, near_vwap)
-    if score < config.get("min_score", 60):
+    score = score_signal(trend, volume_ratio, momentum, rsi, near_vwap,
+                          rsi_min=config["rsi_min"], rsi_max=config["rsi_max"])
+    if pd.isna(score) or score < config.get("min_score", 60):
         return None
 
     # --- TP/SL: calibrated to observed 1–1.5% moves ---
