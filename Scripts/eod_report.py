@@ -90,9 +90,16 @@ def evaluate_open_signals(df):
                 continue
             hist.columns = [c[0] if isinstance(c, tuple) else c for c in hist.columns]
             if use_intraday and hist.index.tz is not None:
-                # yfinance returns tz-aware intraday index; normalize to IST-naive
-                # so it compares cleanly against the signal's date/time strings
-                hist.index = hist.index.tz_convert("Asia/Kolkata").tz_localize(None)
+                # CRITICAL: signal times in signals.csv are recorded by
+                # run_intraday.py via datetime.now() on a GitHub Actions runner,
+                # whose clock is UTC (verified: SULA logged "06:38" for a signal
+                # whose Telegram alert arrived 12:09 IST = 06:38 UTC + 5:30).
+                # This MUST therefore be normalized to UTC, not IST. Converting
+                # to IST here made every sig_ts look ~5.5h earlier than reality
+                # -- i.e. before the 09:15 IST open -- so the window silently
+                # started at market open and re-introduced the whole-day
+                # contamination bug this function exists to prevent.
+                hist.index = hist.index.tz_convert("UTC").tz_localize(None)
         except Exception:
             continue
 
