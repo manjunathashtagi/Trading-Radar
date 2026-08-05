@@ -66,8 +66,10 @@ def load_config():
         # not guessed.
         "trend_max": 0.009,
         "momentum_max": 0.010,
-        "tp_pct": 0.010,     # 1.0% target — matches observed move
-        "sl_pct": 0.005,     # 0.5% stop loss — tight risk/reward
+        "tp_pct": 0.010,     # fallback only, used if ATR can't be computed
+        "sl_pct": 0.005,     # fallback only, used if ATR can't be computed
+        "tp_atr_mult": 1.5,  # TP = entry + ATR * this -- scales with each stock's own volatility
+        "sl_atr_mult": 0.75, # SL = entry - ATR * this -- keeps the same 2:1 reward:risk ratio
         "win_rate": 0,
         "total_trades": 0,
         "wins": 0
@@ -165,6 +167,21 @@ def compute_vwap(df):
     tp = (df["High"] + df["Low"] + df["Close"]) / 3
     return (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
+def compute_atr(df, period=14):
+    # Average True Range -- sizes TP/SL to each stock's OWN actual volatility
+    # instead of a flat percentage applied identically to every stock. A fixed
+    # 1% target was cutting off real 3%+ moves in genuinely volatile names
+    # (confirmed by user: SULA hit 174 vs a 170.15 target; HMVL hit 105.84 vs
+    # a 103.76 target) while presumably being too wide for quieter stocks.
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
 # ================= SCORE =================
 def score_signal(trend, volume, momentum, rsi, near_vwap, rsi_min=50, rsi_max=90):
     score = 0
@@ -249,13 +266,22 @@ def sniper(stock, config):
     if pd.isna(score) or score < config.get("min_score", 60):
         return None
 
-    # --- TP/SL: calibrated to observed 1–1.5% moves ---
-    tp_pct = config.get("tp_pct", 0.010)   # 1.0% target
-    sl_pct = config.get("sl_pct", 0.005)   # 0.5% stop
+    # --- TP/SL: sized to this stock's own ATR, not a flat percentage ---
+    atr = float(compute_atr(df).iloc[-1]) if len(df) >= 14 else float("nan")
 
-    tp = round(last * (1 + tp_pct), 2)
-    sl = round(last * (1 - sl_pct), 2)
-    risk_reward = round(tp_pct / sl_pct, 1)  # should be 2.0
+    if not pd.isna(atr) and atr > 0:
+        tp_atr_mult = config.get("tp_atr_mult", 1.5)
+        sl_atr_mult = config.get("sl_atr_mult", 0.75)
+        tp = round(last + atr * tp_atr_mult, 2)
+        sl = round(last - atr * sl_atr_mult, 2)
+        risk_reward = round(tp_atr_mult / sl_atr_mult, 1)
+    else:
+        # Fallback for the rare case ATR can't be computed -- old fixed-% behavior
+        tp_pct = config.get("tp_pct", 0.010)
+        sl_pct = config.get("sl_pct", 0.005)
+        tp = round(last * (1 + tp_pct), 2)
+        sl = round(last * (1 - sl_pct), 2)
+        risk_reward = round(tp_pct / sl_pct, 1)
 
     return {
         "stock": stock,
@@ -320,9 +346,11 @@ def main():
     msg += f"Found: {len(results)} signals\n\n"
 
     for r in top:
+        tp_pct_actual = round((r['tp'] - r['entry']) / r['entry'] * 100, 2)
+        sl_pct_actual = round((r['entry'] - r['sl']) / r['entry'] * 100, 2)
         msg += (
             f"📈 *{r['stock']}* [Score: {r['score']}]\n"
-            f"Entry: ₹{r['entry']}  TP: ₹{r['tp']} (+1%)  SL: ₹{r['sl']} (-0.5%)\n"
+            f"Entry: ₹{r['entry']}  TP: ₹{r['tp']} (+{tp_pct_actual}%)  SL: ₹{r['sl']} (-{sl_pct_actual}%)\n"
             f"R:R = {r['rr']}x  |  RSI: {r['rsi']}  Vol: {r['volume']}x\n\n"
         )
 
