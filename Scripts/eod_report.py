@@ -2,7 +2,7 @@ import pandas as pd
 import json
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 CONFIG_FILE = "data/model_config.json"
 SIGNAL_FILE = "data/signals.csv"
@@ -70,59 +70,73 @@ def evaluate_open_signals(df):
         return df
 
     updated = 0
+    # Yahoo only serves 5-minute bars for ~60 days. Decide intraday-vs-daily
+    # PER ROW, not per symbol: previously one old signal for a stock forced
+    # every signal for that stock (including yesterday's) onto whole-day bars,
+    # which is exactly the contamination this function exists to avoid. It also
+    # risked an empty 5m download (start beyond ~60d) silently skipping the
+    # whole symbol.
+    intraday_cutoff = today - timedelta(days=58)
+
     for symbol, group in open_df.groupby("stock"):
         if not symbol or str(symbol) == "nan":
             continue
 
-        start_date_str = str(group["date"].min())
-        try:
-            start_dt = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
+        row_dates = pd.to_datetime(group["date"], errors="coerce").dt.date
+        has_intraday_rows = (row_dates >= intraday_cutoff).any()
+        has_daily_rows = (row_dates < intraday_cutoff).any()
 
-        days_back = (today - start_dt).days
-        use_intraday = days_back <= 58  # stay safely inside Yahoo's ~60-day 5m limit
+        hist_i = None
+        hist_d = None
 
-        try:
-            interval = "5m" if use_intraday else "1d"
-            hist = yf.download(f"{symbol}.NS", start=start_date_str, interval=interval, progress=False)
-            if hist.empty:
-                continue
-            hist.columns = [c[0] if isinstance(c, tuple) else c for c in hist.columns]
-            if use_intraday and hist.index.tz is not None:
-                # CRITICAL: signal times in signals.csv are recorded by
-                # run_intraday.py via datetime.now() on a GitHub Actions runner,
-                # whose clock is UTC (verified: SULA logged "06:38" for a signal
-                # whose Telegram alert arrived 12:09 IST = 06:38 UTC + 5:30).
-                # This MUST therefore be normalized to UTC, not IST. Converting
-                # to IST here made every sig_ts look ~5.5h earlier than reality
-                # -- i.e. before the 09:15 IST open -- so the window silently
-                # started at market open and re-introduced the whole-day
-                # contamination bug this function exists to prevent.
-                hist.index = hist.index.tz_convert("UTC").tz_localize(None)
-        except Exception:
-            continue
+        if has_intraday_rows:
+            # Clamp start to the cutoff so the 5m request stays inside Yahoo's window
+            i_start = max(row_dates.min(), intraday_cutoff)
+            try:
+                h = yf.download(f"{symbol}.NS", start=str(i_start), interval="5m", progress=False)
+                if not h.empty:
+                    h.columns = [x[0] if isinstance(x, tuple) else x for x in h.columns]
+                    if h.index.tz is not None:
+                        # Signal times are written by run_intraday.py via
+                        # datetime.now() on a GitHub Actions runner = UTC.
+                        # Must normalize to UTC, not IST.
+                        h.index = h.index.tz_convert("UTC").tz_localize(None)
+                    hist_i = h
+            except Exception:
+                hist_i = None
 
-        if not use_intraday:
-            hist.index = hist.index.astype(str).str[:10]
+        if has_daily_rows:
+            try:
+                h = yf.download(f"{symbol}.NS", start=str(row_dates.min()), interval="1d", progress=False)
+                if not h.empty:
+                    h.columns = [x[0] if isinstance(x, tuple) else x for x in h.columns]
+                    h.index = h.index.astype(str).str[:10]
+                    hist_d = h
+            except Exception:
+                hist_d = None
 
         for idx, row in group.iterrows():
             sig_date = str(row["date"])
             try:
                 tp = float(row["tp"])
                 sl = float(row["sl"])
+                r_date = pd.to_datetime(sig_date).date()
             except (ValueError, TypeError):
                 continue
 
-            if use_intraday:
-                sig_time = str(row.get("time", "09:15"))
+            if r_date >= intraday_cutoff:
+                if hist_i is None:
+                    continue
+                sig_time = str(row.get("time", "03:45"))
                 try:
                     sig_ts = pd.Timestamp(f"{sig_date} {sig_time}")
                 except Exception:
-                    sig_ts = pd.Timestamp(f"{sig_date} 09:15")
-                window = hist[hist.index >= sig_ts]
+                    sig_ts = pd.Timestamp(f"{sig_date} 03:45")
+                window = hist_i[hist_i.index >= sig_ts]
             else:
-                window = hist[hist.index >= sig_date]
+                if hist_d is None:
+                    continue
+                window = hist_d[hist_d.index >= sig_date]
 
             if window.empty:
                 continue
