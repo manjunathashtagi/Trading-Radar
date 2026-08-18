@@ -183,11 +183,27 @@ def compute_atr(df, period=14):
     return tr.rolling(period).mean()
 
 # ================= SCORE =================
-def score_signal(trend, volume, momentum, rsi, near_vwap, rsi_min=50, rsi_max=90):
+def score_signal(trend, volume, momentum, rsi, near_vwap, rsi_min=50, rsi_max=90,
+                  trend_min=0.002, trend_max=0.009, momentum_min=0.003, momentum_max=0.010):
+    # Factor audit on 2,449 closed trades (see factor_audit.py) showed win rate
+    # falls monotonically as trend/momentum rise -- lowest quintile 40-41% win
+    # rate vs 25-26% for the highest quintile. The old formula rewarded HIGHER
+    # trend/momentum with more points, which is backwards: it was scoring
+    # worse setups higher. This inverts it -- within the qualifying band
+    # (trend_min..trend_max, momentum_min..momentum_max), reward being closer
+    # to the LOW end, not the high end. This is a hypothesis from historical
+    # data, not a guarantee -- validate against new signals before trusting it.
+    def reward_low_end(value, lo, hi, weight):
+        if hi <= lo:
+            return 0
+        frac = (value - lo) / (hi - lo)
+        frac = min(max(frac, 0), 1)
+        return (1 - frac) * weight
+
     score = 0
-    score += min(trend * 5000, 25)
+    score += reward_low_end(trend, trend_min, trend_max, 25)
     score += min((volume - 1) * 15, 25)
-    score += min(momentum * 5000, 25)
+    score += reward_low_end(momentum, momentum_min, momentum_max, 25)
     if rsi_min <= rsi <= rsi_max:  # now matches the actual filter range, not a stale hardcoded 50-75
         score += 15
     if near_vwap:
@@ -253,16 +269,30 @@ def sniper(stock, config):
     vwap = float(compute_vwap(df).iloc[-1])
     near_vwap = last > vwap * 0.998
 
-    # Breakout: within 0.5% of 8-bar high
-    recent = df.iloc[-8:]
-    high_8 = float(recent["High"].max())
-    low_8 = float(recent["Low"].min())
-    if (high_8 - last) / high_8 >= 0.005:
+    # Breakout confirmation with retest -- replaces the old "within 0.5% of
+    # 8-bar high" check, which also accepted price still APPROACHING the
+    # high from below (never actually broke it). That let in chasing/false-
+    # breakout entries. This requires the close to have actually cleared the
+    # prior 8-bar high, and caps how far above it can be (avoid chasing an
+    # already-extended move). Data-motivated by the same trend/momentum
+    # inversion found in factor_audit.py -- not yet validated on new signals.
+    if len(df) < 9:
         return None
+    pre_breakout = df.iloc[-9:-1]  # 8 bars BEFORE the latest bar
+    prior_high = float(pre_breakout["High"].max())
+    low_8 = float(pre_breakout["Low"].min())
+
+    breakout_confirmed = last > prior_high
+    if not breakout_confirmed:
+        return None
+    if (last - prior_high) / prior_high > 0.005:
+        return None  # too far above the breakout level -- already extended
 
     # Score gate
     score = score_signal(trend, volume_ratio, momentum, rsi, near_vwap,
-                          rsi_min=config["rsi_min"], rsi_max=config["rsi_max"])
+                          rsi_min=config["rsi_min"], rsi_max=config["rsi_max"],
+                          trend_min=config["trend_min"], trend_max=config.get("trend_max", 0.009),
+                          momentum_min=config["momentum_min"], momentum_max=config.get("momentum_max", 0.010))
     if pd.isna(score) or score < config.get("min_score", 60):
         return None
 
