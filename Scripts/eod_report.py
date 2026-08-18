@@ -202,15 +202,25 @@ def main():
     if all_total >= 10:
         if all_time_wr < 45:
             # Tighten filters when performing poorly.
-            # trend_min/momentum_min are NOT raised here anymore -- real win/loss
-            # data showed winners had LOWER trend/momentum than losers (both in
-            # full data and in a clean, well-timed-only subset), so raising these
-            # floors was actively fighting the trend_max/momentum_max caps added
-            # separately, and even collided with them entirely on 2026-07-29.
-            # volume_min and min_score showed no such inversion, so those still tighten.
+            # trend_min/momentum_min are NOT raised here -- real win/loss data
+            # showed winners had LOWER trend/momentum than losers.
+            #
+            # min_score is FROZEN as of this patch, not just left alone like
+            # trend_min/momentum_min: factor_audit.py on 2,449 closed trades
+            # showed the score itself was inversely correlated with winning
+            # (lowest-score quintile: 43.6% win rate; highest: 32.5%), because
+            # the score formula rewarded the same high trend/momentum that
+            # loses more. Raising min_score was therefore filtering FOR worse
+            # trades, which is almost certainly why 2,400+ trades of tightening
+            # (60->76) never moved the win rate. The score formula itself has
+            # been changed (score_signal in run_intraday.py) to reward the low
+            # end of the trend/momentum band instead of the high end. Leave
+            # min_score frozen here until there's a real batch of signals
+            # scored under the NEW formula -- auto-raising it again before that
+            # data exists would just repeat the same mistake blind.
             config["volume_min"] = round(min(config["volume_min"] + 0.1, 3.0), 2)
-            config["min_score"] = min(config.get("min_score", 60) + 2, 80)
-            print("📉 Tightening filters (win rate below 45%)")
+            print("📉 Tightening volume_min only (win rate below 45%). "
+                  "min_score frozen pending data under the corrected score formula.")
         elif all_time_wr > 60:
             # Relax slightly when performing well
             config["volume_min"] = round(max(config["volume_min"] - 0.05, 1.3), 2)
