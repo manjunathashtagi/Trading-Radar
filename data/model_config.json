@@ -7,9 +7,9 @@
   "min_score": 76,
   "tp_pct": 0.01,
   "sl_pct": 0.005,
-  "win_rate": 32.6,
-  "total_trades": 2505,
-  "wins": 817,
+  "win_rate": 32.7,
+  "total_trades": 2513,
+  "wins": 823,
   "tp_atr_mult": 6.0,
   "sl_atr_mult": 3.0
 }
